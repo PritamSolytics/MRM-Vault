@@ -1263,7 +1263,7 @@ If a placeholder doesn't match a known `field_name`, it's flagged in red before 
                     return "background-color:#f1f5f9;color:#94a3b8"
                 return ""
 
-            styled = df.style.applymap(colour_cell, subset=[c for c in df.columns if c != "Section"])
+            styled = df.style.map(colour_cell, subset=[c for c in df.columns if c != "Section"])
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
         st.markdown("---")
