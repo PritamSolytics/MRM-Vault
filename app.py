@@ -25,6 +25,8 @@ from data_model import (
     NODES, LINKS, REL_TYPES, NODE_SCHEMA, STAGE_TRANSITIONS,
     ENTITY, WORKFLOW, QUICK_ACCESS,
     get_risk_score, get_status_color, get_risk_color, get_rel_category_color,
+    ATTRIBUTE_LIBRARY, TEMPLATE_CONFIGS, SECTION_RULES,
+    DOCUMENT_TEMPLATES, AUTOMATION_RULES,
 )
 from graph_engine import (
     get_related_ids, get_outgoing, get_incoming, get_visible_ids,
@@ -907,11 +909,12 @@ st.markdown(f"""
 </div>""", unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_graph, tab_inventory, tab_rels, tab_schema = st.tabs([
+tab_graph, tab_inventory, tab_rels, tab_schema, tab_template = st.tabs([
     "🔷 Relationship graph",
     "📋 Full inventory",
     "🔗 Relationship table",
     "📐 Attribute schema",
+    "📋 Master template",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1092,3 +1095,314 @@ with tab_schema:
             flow = " → ".join(stages)
             st.markdown(f"`{flow}`")
             st.caption("Stages are forward-only. advanceStage() enforces this.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TAB 5 — MASTER TEMPLATE
+# ─────────────────────────────────────────────────────────────────────────────
+with tab_template:
+    st.markdown("**Master template** — the full attribute library, template configurations, "
+                "section permission rules, document template mapping, and automation rules. "
+                "This is exactly what an admin configures in MRM Vault's Entity Management.")
+
+    mt1, mt2, mt3, mt4, mt5 = st.tabs([
+        "📦 Attribute library",
+        "🗂 Template configs",
+        "🔐 Section rules",
+        "📄 Document templates",
+        "⚡ Automation rules",
+    ])
+
+    # ── Attribute library ──────────────────────────────────────────────────────
+    with mt1:
+        st.markdown("#### Attribute library — all column definitions")
+        st.caption(
+            "field_name is used in derived formulas and document template placeholders. "
+            "display_name is what users see on the UI form. These two are deliberately different — "
+            "a key insight from the KT sessions."
+        )
+
+        # Filter controls
+        fc1, fc2, fc3 = st.columns([1, 1, 2])
+        with fc1:
+            attr_type_filter = st.selectbox(
+                "Filter by entity type",
+                ["All", "All (Common)", "Model", "Assessment", "Finding", "Subprocess",
+                 "Use Case", "Query"],
+                key="attr_type_filter",
+            )
+        with fc2:
+            section_filter = st.selectbox(
+                "Filter by section",
+                ["All", "Preliminary", "General Information", "Model Identification",
+                 "Governance", "Descriptive", "Hidden"],
+                key="section_filter",
+            )
+        with fc3:
+            attr_search = st.text_input(
+                "Search field name or display name",
+                placeholder="risk_tier, regulation, severity…",
+                key="attr_search",
+            )
+
+        filtered_attrs = []
+        for a in ATTRIBUTE_LIBRARY:
+            if attr_type_filter not in ("All", "All (Common)"):
+                if attr_type_filter not in a["entity_types"] and "All" not in a["entity_types"]:
+                    continue
+            if attr_type_filter == "All (Common)" and "All" not in a["entity_types"]:
+                continue
+            if section_filter != "All" and a["section"] != section_filter:
+                continue
+            if attr_search and attr_search.lower() not in a["field_name"].lower()                     and attr_search.lower() not in a["display_name"].lower():
+                continue
+            filtered_attrs.append({
+                "field_name (formula key)": a["field_name"],
+                "display_name (UI label)": a["display_name"],
+                "data_type": a["data_type"],
+                "section": a["section"],
+                "entity_types": ", ".join(a["entity_types"]),
+                "required": "✓" if a["required"] else "",
+                "doc_placeholder": a["doc_placeholder"],
+                "validation / options": a["validation"],
+                "example value": a["example"],
+            })
+
+        if filtered_attrs:
+            st.dataframe(
+                pd.DataFrame(filtered_attrs),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "field_name (formula key)": st.column_config.TextColumn(width="medium"),
+                    "display_name (UI label)": st.column_config.TextColumn(width="medium"),
+                    "data_type": st.column_config.TextColumn(width="medium"),
+                    "section": st.column_config.TextColumn(width="medium"),
+                    "entity_types": st.column_config.TextColumn(width="small"),
+                    "required": st.column_config.TextColumn(width="small"),
+                    "doc_placeholder": st.column_config.TextColumn(width="medium"),
+                    "validation / options": st.column_config.TextColumn(width="large"),
+                    "example value": st.column_config.TextColumn(width="medium"),
+                },
+            )
+            st.caption(f"{len(filtered_attrs)} attributes shown")
+        else:
+            st.info("No attributes match the current filters.")
+
+        st.markdown("---")
+        st.markdown("#### Key rule: field_name vs display_name")
+        st.markdown("""
+| What | Where used | Example |
+|---|---|---|
+| `field_name` | Derived formula engine, document template placeholders, API keys | `risk_tier` |
+| `display_name` | UI form label, report column header, user-facing text | `Risk tier` |
+
+When building a Word document template, paste `{{risk_tier}}` — **not** `{{Risk tier}}`.  
+The system validates every placeholder against the attribute library at upload time.
+If a placeholder doesn't match a known `field_name`, it's flagged in red before download.
+        """)
+
+    # ── Template configs ───────────────────────────────────────────────────────
+    with mt2:
+        st.markdown("#### Template configurations — what each template type exposes")
+        st.caption(
+            "Each template type creates a different entity type with a different set of "
+            "attributes organised into sections. Only the attributes in a template's sections "
+            "are visible on that entity's detail page — this is the zoom-in sub-table."
+        )
+
+        for tmpl_name, tmpl in TEMPLATE_CONFIGS.items():
+            with st.expander(f"**{tmpl_name}** — prefix: {tmpl['id_prefix']}"):
+                tc1, tc2 = st.columns([1, 1])
+                with tc1:
+                    st.markdown(f"**Description:** {tmpl['description']}")
+                    st.markdown(f"**ID prefix:** `{tmpl['id_prefix']}`")
+                    st.markdown(f"**Default workflow:** {tmpl['workflow']}")
+                    st.markdown("**Preliminary attributes** (always shown at top of entity page):")
+                    st.code(", ".join(tmpl["preliminary_attrs"]))
+
+                with tc2:
+                    st.markdown("**Sections and their attributes:**")
+                    for section_name, attrs in tmpl["sections"].items():
+                        st.markdown(f"*{section_name}*")
+                        st.code(", ".join(attrs))
+
+                if tmpl.get("conditional_sections"):
+                    st.markdown("**Conditional sections** (only appear when condition is true):")
+                    for sec, condition in tmpl["conditional_sections"].items():
+                        st.markdown(f"- **{sec}** → shown when: `{condition}`")
+
+                if tmpl.get("doc_placeholders"):
+                    st.markdown("**Document template placeholders:**")
+                    st.code("  ".join(tmpl["doc_placeholders"]))
+
+    # ── Section rules ──────────────────────────────────────────────────────────
+    with mt3:
+        st.markdown("#### Section-level permission rules")
+        st.caption(
+            "At each workflow stage, every section in the template is either manage (editable), "
+            "view (read-only), or hidden. This controls exactly who can see and edit what, "
+            "and when — without writing any custom code."
+        )
+
+        for entity_type, sections in SECTION_RULES.items():
+            st.markdown(f"**{entity_type} template**")
+            rows = []
+            for section_name, stage_perms in sections.items():
+                row = {"Section": section_name}
+                row.update(stage_perms)
+                rows.append(row)
+            df = pd.DataFrame(rows)
+
+            def colour_cell(val):
+                if val == "manage":
+                    return "background-color:#dcfce7;color:#15803d;font-weight:500"
+                elif val == "view":
+                    return "background-color:#dbeafe;color:#1d4ed8"
+                elif val == "hidden":
+                    return "background-color:#f1f5f9;color:#94a3b8"
+                return ""
+
+            styled = df.style.applymap(colour_cell, subset=[c for c in df.columns if c != "Section"])
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.markdown("""
+**Rule summary:**
+- `manage` — section is visible AND editable by the current role at this stage
+- `view` — section is visible but read-only (audit trail preserved)
+- `hidden` — section is not shown at all (used for derived/internal fields)
+
+The **Hidden** section is special: attributes placed here (like `derived_risk_score`) 
+are computed internally and never shown directly on the UI form — but they are accessible 
+in document templates via `{{derived_risk_score}}` and in reports.
+        """)
+
+    # ── Document templates ─────────────────────────────────────────────────────
+    with mt4:
+        st.markdown("#### Document template mapping")
+        st.caption(
+            "A Word (.docx) or PDF file is uploaded as a document template. "
+            "Each {{placeholder}} in the file maps to an attribute field_name. "
+            "When 'Generate document' is clicked, the system substitutes the current "
+            "attribute value from the entity row and outputs a populated file."
+        )
+
+        for doc_tmpl in DOCUMENT_TEMPLATES:
+            with st.expander(f"**{doc_tmpl['name']}** ({doc_tmpl['format']}) — {doc_tmpl['entity_type']}"):
+                st.markdown(f"*{doc_tmpl['description']}*")
+                st.markdown("")
+
+                placeholder_rows = []
+                for p in doc_tmpl["placeholders"]:
+                    placeholder_rows.append({
+                        "Placeholder in Word/PDF": p["placeholder"],
+                        "Maps to field_name": p["maps_to"],
+                        "Display name (for reference)": p["display_name"],
+                    })
+
+                st.dataframe(
+                    pd.DataFrame(placeholder_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Placeholder in Word/PDF": st.column_config.TextColumn(width="medium"),
+                        "Maps to field_name": st.column_config.TextColumn(width="medium"),
+                        "Display name (for reference)": st.column_config.TextColumn(width="medium"),
+                    },
+                )
+
+                # Show a preview of what the placeholder substitution looks like
+                st.markdown("**Example: what substitution looks like**")
+                if doc_tmpl["entity_type"] == "Model":
+                    sample_node = NODES.get("credit_risk_model", {})
+                    sample_attrs = sample_node.get("attributes", {})
+                    preview_rows = []
+                    for p in doc_tmpl["placeholders"][:5]:
+                        val = sample_attrs.get(p["maps_to"],
+                              sample_node.get(p["maps_to"], "—"))
+                        preview_rows.append({
+                            "Placeholder": p["placeholder"],
+                            "→ Resolved value (Credit Risk Model)": str(val),
+                        })
+                    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True,
+                                 hide_index=True)
+
+        st.markdown("---")
+        st.markdown("""
+**Critical rule from KT sessions:**  
+Use `{{field_name}}` in the Word template, **not** `{{display_name}}`.  
+- ✅ `{{risk_tier}}` → resolves to "T1 (Material)"  
+- ❌ `{{Risk tier}}` → flagged in red, document generation fails  
+
+Unrecognised placeholders are validated before download — the system checks every 
+`{{...}}` against the attribute library and highlights mismatches.
+        """)
+
+    # ── Automation rules ───────────────────────────────────────────────────────
+    with mt5:
+        st.markdown("#### Automation rules — trigger → action")
+        st.caption(
+            "Automations fire based on four trigger types: entity transition, "
+            "attribute updated, time-based, and entity created. "
+            "They are configured in Entity Management — no code required."
+        )
+
+        trigger_colors = {
+            "Entity transition": ("#dbeafe", "#1d4ed8"),
+            "Time-based":        ("#fef3c7", "#92400e"),
+            "Attribute updated":  ("#ede9fe", "#6d28d9"),
+            "Entity created":     ("#dcfce7", "#15803d"),
+        }
+
+        auto_rows = []
+        for rule in AUTOMATION_RULES:
+            bg, tc = trigger_colors.get(rule["trigger_type"], ("#f1f5f9", "#64748b"))
+            auto_rows.append({
+                "Rule name": rule["name"],
+                "Trigger type": rule["trigger_type"],
+                "Trigger condition": rule["trigger_condition"],
+                "Action": rule["action"],
+                "Entity type": rule["entity_type"],
+            })
+
+        st.dataframe(
+            pd.DataFrame(auto_rows),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Rule name": st.column_config.TextColumn(width="medium"),
+                "Trigger type": st.column_config.TextColumn(width="small"),
+                "Trigger condition": st.column_config.TextColumn(width="large"),
+                "Action": st.column_config.TextColumn(width="large"),
+                "Entity type": st.column_config.TextColumn(width="small"),
+            },
+        )
+
+        st.markdown("---")
+        st.markdown("#### Trigger type reference")
+        trig_cols = st.columns(4)
+        trigger_info = [
+            ("Entity transition", "#dbeafe", "#1d4ed8",
+             "Fires when a workflow moves from one node to another. "
+             "Most powerful — used for cross-entity effects like unlocking the Approval Workflow."),
+            ("Attribute updated", "#ede9fe", "#6d28d9",
+             "Fires when a specific attribute value changes. "
+             "Used for derived field recalculation — e.g. risk_tier auto-derives when financial_impact changes."),
+            ("Time-based", "#fef3c7", "#92400e",
+             "Fires when today's date matches a date attribute. "
+             "Used for reminders: validation_due_date - 7 days, finding.due_date - 1 day."),
+            ("Entity created", "#dcfce7", "#15803d",
+             "Fires once when any new entity is created from a template type. "
+             "Used to send welcome notifications and set default values."),
+        ]
+        for col, (name, bg, tc, desc) in zip(trig_cols, trigger_info):
+            with col:
+                st.markdown(
+                    f'<div style="background:{bg};color:{tc};padding:6px 10px;'
+                    f'border-radius:6px;font-size:11px;font-weight:600;margin-bottom:6px">'
+                    f'{name}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(f'<div style="font-size:11.5px;color:#64748b;line-height:1.5">'
+                            f'{desc}</div>', unsafe_allow_html=True)

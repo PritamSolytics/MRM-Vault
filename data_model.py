@@ -607,6 +607,536 @@ def get_rel_category_color(category: str) -> tuple:
     }.get(category, ("#f1f5f9", "#64748b"))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MASTER TEMPLATE — attribute library, template configs, section rules
+#
+# This mirrors what an admin configures in MRM Vault's Entity Management:
+#   1. ATTRIBUTE_LIBRARY  — all column definitions (field name, display name,
+#                           data type, validation, section, visibility rules)
+#   2. TEMPLATE_CONFIGS   — which attributes each template type exposes, and
+#                           in which section (preliminary vs descriptive)
+#   3. SECTION_RULES      — per-section visibility and edit permissions at each
+#                           workflow stage (manage / view / hidden)
+#   4. DOCUMENT_TEMPLATES — Word/PDF templates with {{placeholder}} mapping to
+#                           attribute field names (not display names)
+#   5. AUTOMATION_RULES   — trigger → action definitions
+# ══════════════════════════════════════════════════════════════════════════════
+
+ATTRIBUTE_LIBRARY = [
+    # ── Common (present on all entity types) ──────────────────────────────────
+    {
+        "field_name": "entity_id",          "display_name": "Entity ID",
+        "data_type": "Auto (prefix+counter)","section": "Preliminary",
+        "entity_types": ["All"],            "required": True,
+        "validation": "Unique, system-generated",
+        "example": "MOD-001, ASA-012, VLD-003",
+        "doc_placeholder": "{{entity_id}}",
+    },
+    {
+        "field_name": "entity_name",        "display_name": "Name",
+        "data_type": "Text (100 chars)",    "section": "Preliminary",
+        "entity_types": ["All"],            "required": True,
+        "validation": "Max 100 characters",
+        "example": "Credit Risk Model",
+        "doc_placeholder": "{{entity_name}}",
+    },
+    {
+        "field_name": "owner",              "display_name": "Owner",
+        "data_type": "Association (user)",  "section": "Preliminary",
+        "entity_types": ["All"],            "required": True,
+        "validation": "Must be active user in system",
+        "example": "Risk Analytics Team",
+        "doc_placeholder": "{{owner}}",
+    },
+    {
+        "field_name": "status",             "display_name": "Status",
+        "data_type": "Single-select",       "section": "Preliminary",
+        "entity_types": ["All"],            "required": True,
+        "validation": "Active | In Progress | Closed | Archived | Under Review | Published",
+        "example": "Active",
+        "doc_placeholder": "{{status}}",
+    },
+    {
+        "field_name": "workflow_state",     "display_name": "Workflow state",
+        "data_type": "Derived (system)",    "section": "Preliminary",
+        "entity_types": ["All"],            "required": False,
+        "validation": "Read-only — mirrors current workflow node name",
+        "example": "Quantitative Testing",
+        "doc_placeholder": "{{workflow_state}}",
+    },
+    {
+        "field_name": "template_type",      "display_name": "Template type",
+        "data_type": "Single-select (system)", "section": "Preliminary",
+        "entity_types": ["All"],            "required": False,
+        "validation": "Set at creation, immutable",
+        "example": "Model",
+        "doc_placeholder": "{{template_type}}",
+    },
+    {
+        "field_name": "created_date",       "display_name": "Created date",
+        "data_type": "Date (system)",       "section": "Preliminary",
+        "entity_types": ["All"],            "required": False,
+        "validation": "System timestamp, immutable",
+        "example": "30 Apr 2026",
+        "doc_placeholder": "{{created_date}}",
+    },
+    # ── Model-specific ────────────────────────────────────────────────────────
+    {
+        "field_name": "model_type",         "display_name": "Model type",
+        "data_type": "Single-select",       "section": "Model Identification",
+        "entity_types": ["Model"],          "required": True,
+        "validation": "Statistical | ML | AI/GenAI | Vendor",
+        "example": "Statistical",
+        "doc_placeholder": "{{model_type}}",
+    },
+    {
+        "field_name": "risk_tier",          "display_name": "Risk tier",
+        "data_type": "Single-select",       "section": "Model Identification",
+        "entity_types": ["Model"],          "required": True,
+        "validation": "T1 (Material) | T2 | T3",
+        "example": "T1 (Material)",
+        "doc_placeholder": "{{risk_tier}}",
+    },
+    {
+        "field_name": "regulation",         "display_name": "Regulation",
+        "data_type": "Multi-select",        "section": "Governance",
+        "entity_types": ["Model"],          "required": False,
+        "validation": "SR 11-7 | PRA SS1/23 | OSFI E-23 | EU AI Act | NAIC",
+        "example": "SR 11-7, OSFI E-23",
+        "doc_placeholder": "{{regulation}}",
+    },
+    {
+        "field_name": "business_unit",      "display_name": "Business unit",
+        "data_type": "Single-select",       "section": "General Information",
+        "entity_types": ["Model"],          "required": True,
+        "validation": "AWM | Retail | Commercial | Treasury | Risk",
+        "example": "Risk Analytics",
+        "doc_placeholder": "{{business_unit}}",
+    },
+    {
+        "field_name": "region",             "display_name": "Region",
+        "data_type": "Conditional select",  "section": "General Information",
+        "entity_types": ["Model"],          "required": False,
+        "validation": "Options change based on business_unit value",
+        "example": "India, Global",
+        "doc_placeholder": "{{region}}",
+    },
+    {
+        "field_name": "development_due_date","display_name": "Development due date",
+        "data_type": "Date",               "section": "General Information",
+        "entity_types": ["Model"],         "required": False,
+        "validation": "Must be before validation_due_date",
+        "example": "30 Sep 2025",
+        "doc_placeholder": "{{development_due_date}}",
+    },
+    {
+        "field_name": "validation_due_date","display_name": "Validation due date",
+        "data_type": "Date",               "section": "General Information",
+        "entity_types": ["Model"],         "required": False,
+        "validation": "Time-based automation trigger",
+        "example": "31 Oct 2025",
+        "doc_placeholder": "{{validation_due_date}}",
+    },
+    {
+        "field_name": "derived_risk_score", "display_name": "Risk score",
+        "data_type": "Derived formula",    "section": "Hidden",
+        "entity_types": ["Model"],         "required": False,
+        "validation": "base(risk) + upstream_deps×3 + status_penalty + degraded×8. Capped 100.",
+        "example": "91",
+        "doc_placeholder": "{{derived_risk_score}}",
+    },
+    {
+        "field_name": "model_family",       "display_name": "Model family",
+        "data_type": "Single-select",       "section": "Model Identification",
+        "entity_types": ["Model"],          "required": False,
+        "validation": "Credit Risk | Fraud | Market Risk | ALM | Pricing",
+        "example": "Credit Risk",
+        "doc_placeholder": "{{model_family}}",
+    },
+    {
+        "field_name": "intended_use",       "display_name": "Intended use",
+        "data_type": "Text extended (10k)", "section": "General Information",
+        "entity_types": ["Model"],          "required": True,
+        "validation": "Max 10,000 characters",
+        "example": "Credit risk scoring for retail portfolio",
+        "doc_placeholder": "{{intended_use}}",
+    },
+    {
+        "field_name": "financial_impact",   "display_name": "Financial impact",
+        "data_type": "Single-select",       "section": "Model Identification",
+        "entity_types": ["Model"],          "required": True,
+        "validation": "High | Medium | Low — drives risk_tier derivation",
+        "example": "High",
+        "doc_placeholder": "{{financial_impact}}",
+    },
+    # ── Assessment-specific ───────────────────────────────────────────────────
+    {
+        "field_name": "final_model_det",    "display_name": "Final model determination",
+        "data_type": "Single-select",       "section": "Model Identification",
+        "entity_types": ["Assessment"],     "required": True,
+        "validation": "Model | Non-model | AI-model — drives workflow branch",
+        "example": "Model",
+        "doc_placeholder": "{{final_model_det}}",
+    },
+    {
+        "field_name": "involves_ai",        "display_name": "Involves AI/ML",
+        "data_type": "Single-select",       "section": "Model Identification",
+        "entity_types": ["Assessment"],     "required": True,
+        "validation": "Yes | No — shows AI-specific conditional sections when Yes",
+        "example": "No",
+        "doc_placeholder": "{{involves_ai}}",
+    },
+    {
+        "field_name": "linked_model_id",    "display_name": "Linked model",
+        "data_type": "Association",         "section": "Preliminary",
+        "entity_types": ["Assessment"],     "required": False,
+        "validation": "Populated after assessment completes and model is created",
+        "example": "MOD-001",
+        "doc_placeholder": "{{linked_model_id}}",
+    },
+    # ── Finding-specific ──────────────────────────────────────────────────────
+    {
+        "field_name": "severity",           "display_name": "Severity",
+        "data_type": "Single-select",       "section": "Preliminary",
+        "entity_types": ["Finding"],        "required": True,
+        "validation": "Critical | Major | Minor",
+        "example": "Critical",
+        "doc_placeholder": "{{severity}}",
+    },
+    {
+        "field_name": "finding_type",       "display_name": "Finding type",
+        "data_type": "Single-select",       "section": "Preliminary",
+        "entity_types": ["Finding"],        "required": True,
+        "validation": "Conceptual | Data | Performance | Documentation | Governance",
+        "example": "Performance",
+        "doc_placeholder": "{{finding_type}}",
+    },
+    {
+        "field_name": "linked_validation",  "display_name": "Linked validation",
+        "data_type": "Association",         "section": "Preliminary",
+        "entity_types": ["Finding"],        "required": True,
+        "validation": "Must reference a Subprocess entity of type Validation",
+        "example": "VLD-003",
+        "doc_placeholder": "{{linked_validation}}",
+    },
+    {
+        "field_name": "due_date",           "display_name": "Resolution due date",
+        "data_type": "Date",               "section": "General",
+        "entity_types": ["Finding"],        "required": True,
+        "validation": "Triggers reminder automation at T-7 and T-1 days",
+        "example": "15 May 2026",
+        "doc_placeholder": "{{due_date}}",
+    },
+    {
+        "field_name": "resolution_notes",   "display_name": "Resolution notes",
+        "data_type": "Text extended (10k)", "section": "Descriptive",
+        "entity_types": ["Finding"],        "required": False,
+        "validation": "Written by model owner on closure",
+        "example": "Threshold recalibrated — PSI reduced to 0.04",
+        "doc_placeholder": "{{resolution_notes}}",
+    },
+    # ── Subprocess-specific ───────────────────────────────────────────────────
+    {
+        "field_name": "subprocess_type",    "display_name": "Subprocess type",
+        "data_type": "Single-select",       "section": "Preliminary",
+        "entity_types": ["Subprocess"],     "required": True,
+        "validation": "Validation | Annual Review | Monitoring | Retirement | Change | Attestation",
+        "example": "Validation",
+        "doc_placeholder": "{{subprocess_type}}",
+    },
+    {
+        "field_name": "parent_model_id",    "display_name": "Parent model",
+        "data_type": "Association",         "section": "Preliminary",
+        "entity_types": ["Subprocess"],     "required": True,
+        "validation": "Must reference a Model entity",
+        "example": "MOD-001",
+        "doc_placeholder": "{{parent_model_id}}",
+    },
+    {
+        "field_name": "validator_assigned", "display_name": "Assigned validator",
+        "data_type": "Association (user)",  "section": "Preliminary",
+        "entity_types": ["Subprocess"],     "required": False,
+        "validation": "Must be in Independent Validation group",
+        "example": "A. Mehta",
+        "doc_placeholder": "{{validator_assigned}}",
+    },
+    {
+        "field_name": "sign_off_status",    "display_name": "Sign-off status",
+        "data_type": "Single-select",       "section": "Descriptive",
+        "entity_types": ["Subprocess"],     "required": False,
+        "validation": "Signed off | Conditional | Rejected | Pending",
+        "example": "Pending",
+        "doc_placeholder": "{{sign_off_status}}",
+    },
+]
+
+# ── Template configurations ────────────────────────────────────────────────────
+# Each template type specifies which attributes appear in which section,
+# and which workflow is attached by default.
+TEMPLATE_CONFIGS = {
+    "Model": {
+        "description": "Primary entity. Created when an Assessment determines final_model_det = Model.",
+        "id_prefix": "MOD",
+        "workflow": "Validation → Monitoring → Approval",
+        "preliminary_attrs": ["entity_id","entity_name","owner","status","workflow_state",
+                              "template_type","created_date"],
+        "sections": {
+            "General Information":    ["business_unit","region","development_due_date",
+                                       "validation_due_date","intended_use"],
+            "Model Identification":   ["model_type","risk_tier","model_family",
+                                       "financial_impact","regulation"],
+            "Governance":             ["regulation"],
+            "Hidden":                 ["derived_risk_score"],
+        },
+        "conditional_sections": {
+            "EU AI Act Compliance":   "regulation contains 'EU AI Act'",
+            "AI/ML Extended Fields":  "model_type in ('ML', 'AI/GenAI')",
+        },
+        "doc_placeholders": ["{{entity_id}}","{{entity_name}}","{{owner}}","{{risk_tier}}",
+                             "{{model_type}}","{{regulation}}","{{validation_due_date}}",
+                             "{{derived_risk_score}}","{{model_family}}","{{intended_use}}"],
+    },
+    "Assessment": {
+        "description": "Identification questionnaire. Creates a Model, Non-model, or AI-model via workflow branch.",
+        "id_prefix": "ASA",
+        "workflow": "Identification → Decision → Registration",
+        "preliminary_attrs": ["entity_id","entity_name","owner","status","workflow_state",
+                              "template_type","linked_model_id"],
+        "sections": {
+            "Model Identification":   ["final_model_det","involves_ai"],
+            "Business Context":       ["business_unit","financial_impact","intended_use"],
+            "Conditional — AI":       ["model_type"],
+        },
+        "conditional_sections": {
+            "AI/ML Specific":         "involves_ai = Yes",
+            "Vendor Model":           "involves vendor model = Yes",
+        },
+        "doc_placeholders": ["{{entity_id}}","{{entity_name}}","{{owner}}",
+                             "{{final_model_det}}","{{involves_ai}}","{{linked_model_id}}"],
+    },
+    "Subprocess": {
+        "description": "Child of a Model. Types: Validation, Annual Review, Monitoring, Retirement, Change, Attestation.",
+        "id_prefix": "VLD / MON / CHG",
+        "workflow": "Depends on subprocess_type — see STAGE_TRANSITIONS",
+        "preliminary_attrs": ["entity_id","entity_name","owner","status","workflow_state",
+                              "subprocess_type","parent_model_id","validator_assigned"],
+        "sections": {
+            "General":                ["val_start_date","val_end_date"],
+            "Descriptive":            ["sign_off_status"],
+        },
+        "conditional_sections": {
+            "Quantitative Testing":   "subprocess_type = Validation AND stage = Quantitative Testing",
+        },
+        "doc_placeholders": ["{{entity_id}}","{{entity_name}}","{{parent_model_id}}",
+                             "{{validator_assigned}}","{{sign_off_status}}","{{subprocess_type}}"],
+    },
+    "Finding": {
+        "description": "Raised during Validation. Child of a Subprocess. Resolved by model owner.",
+        "id_prefix": "FND",
+        "workflow": "Raised → Open → Remediation → Closed",
+        "preliminary_attrs": ["entity_id","entity_name","owner","status","severity",
+                              "finding_type","linked_validation","due_date"],
+        "sections": {
+            "Descriptive":            ["resolution_notes","closure_evidence"],
+        },
+        "conditional_sections": {},
+        "doc_placeholders": ["{{entity_id}}","{{severity}}","{{finding_type}}",
+                             "{{linked_validation}}","{{due_date}}","{{resolution_notes}}"],
+    },
+    "Use Case": {
+        "description": "Documents why a model exists. One use case can be linked to many models.",
+        "id_prefix": "UC",
+        "workflow": "Registration → Active",
+        "preliminary_attrs": ["entity_id","entity_name","owner","status"],
+        "sections": {
+            "Descriptive":            ["use_case_desc","linked_models"],
+        },
+        "conditional_sections": {},
+        "doc_placeholders": ["{{entity_id}}","{{entity_name}}","{{use_case_desc}}","{{linked_models}}"],
+    },
+    "Query": {
+        "description": "Tracks justification queries raised against any model.",
+        "id_prefix": "QRY",
+        "workflow": "Raised → In Review → Resolved",
+        "preliminary_attrs": ["entity_id","entity_name","owner","status"],
+        "sections": {
+            "Descriptive":            ["query_text","raised_by","query_resolution"],
+        },
+        "conditional_sections": {},
+        "doc_placeholders": ["{{entity_id}}","{{entity_name}}","{{query_text}}","{{query_resolution}}"],
+    },
+    "Access Request": {
+        "description": "Permission proposal for accessing a model or dataset.",
+        "id_prefix": "AR",
+        "workflow": "Submitted → Approved / Rejected",
+        "preliminary_attrs": ["entity_id","entity_name","owner","status"],
+        "sections": {
+            "Descriptive":            ["access_scope","justification","approved_by"],
+        },
+        "conditional_sections": {},
+        "doc_placeholders": ["{{entity_id}}","{{access_scope}}","{{justification}}","{{approved_by}}"],
+    },
+}
+
+# ── Section-level permission rules (per workflow stage) ────────────────────────
+# manage = editable, view = read-only, hidden = not visible
+SECTION_RULES = {
+    "Model": {
+        "General Information": {
+            "Registration":  "manage",
+            "Validation":    "view",
+            "Monitoring":    "view",
+            "Approved":      "view",
+        },
+        "Model Identification": {
+            "Registration":  "manage",
+            "Validation":    "view",
+            "Monitoring":    "view",
+            "Approved":      "view",
+        },
+        "Governance": {
+            "Registration":  "view",
+            "Validation":    "manage",
+            "Monitoring":    "view",
+            "Approved":      "view",
+        },
+        "Validation Results": {
+            "Registration":  "hidden",
+            "Validation":    "manage",
+            "Monitoring":    "view",
+            "Approved":      "view",
+        },
+        "Monitoring Metrics": {
+            "Registration":  "hidden",
+            "Validation":    "hidden",
+            "Monitoring":    "manage",
+            "Approved":      "view",
+        },
+        "Hidden": {
+            "Registration":  "hidden",
+            "Validation":    "hidden",
+            "Monitoring":    "hidden",
+            "Approved":      "hidden",
+        },
+    },
+}
+
+# ── Document template mapping ──────────────────────────────────────────────────
+# Placeholder key = attribute field_name (NOT display_name)
+# This is the exact rule from KT sessions: Word template uses {{field_name}}
+DOCUMENT_TEMPLATES = [
+    {
+        "name": "Model Lifecycle Report",
+        "entity_type": "Model",
+        "format": "Word (.docx)",
+        "description": "Full model lifecycle summary for committee distribution.",
+        "placeholders": [
+            {"placeholder": "{{entity_id}}",            "maps_to": "entity_id",            "display_name": "Entity ID"},
+            {"placeholder": "{{entity_name}}",          "maps_to": "entity_name",          "display_name": "Name"},
+            {"placeholder": "{{owner}}",                "maps_to": "owner",                "display_name": "Owner"},
+            {"placeholder": "{{model_type}}",           "maps_to": "model_type",           "display_name": "Model type"},
+            {"placeholder": "{{risk_tier}}",            "maps_to": "risk_tier",            "display_name": "Risk tier"},
+            {"placeholder": "{{regulation}}",           "maps_to": "regulation",           "display_name": "Regulation"},
+            {"placeholder": "{{development_due_date}}", "maps_to": "development_due_date", "display_name": "Dev due date"},
+            {"placeholder": "{{validation_due_date}}",  "maps_to": "validation_due_date",  "display_name": "Val due date"},
+            {"placeholder": "{{derived_risk_score}}",   "maps_to": "derived_risk_score",   "display_name": "Risk score"},
+            {"placeholder": "{{workflow_state}}",       "maps_to": "workflow_state",       "display_name": "Current stage"},
+            {"placeholder": "{{intended_use}}",         "maps_to": "intended_use",         "display_name": "Intended use"},
+            {"placeholder": "{{financial_impact}}",     "maps_to": "financial_impact",     "display_name": "Financial impact"},
+        ],
+    },
+    {
+        "name": "Validation Sign-off Certificate",
+        "entity_type": "Subprocess",
+        "format": "PDF",
+        "description": "Formal sign-off document generated at Validation Sign-off stage.",
+        "placeholders": [
+            {"placeholder": "{{entity_id}}",            "maps_to": "entity_id",            "display_name": "Entity ID"},
+            {"placeholder": "{{parent_model_id}}",      "maps_to": "parent_model_id",      "display_name": "Parent model"},
+            {"placeholder": "{{validator_assigned}}",   "maps_to": "validator_assigned",   "display_name": "Validator"},
+            {"placeholder": "{{sign_off_status}}",      "maps_to": "sign_off_status",      "display_name": "Sign-off status"},
+            {"placeholder": "{{subprocess_type}}",      "maps_to": "subprocess_type",      "display_name": "Type"},
+            {"placeholder": "{{workflow_state}}",       "maps_to": "workflow_state",       "display_name": "Current stage"},
+        ],
+    },
+    {
+        "name": "Finding Closure Report",
+        "entity_type": "Finding",
+        "format": "Word (.docx)",
+        "description": "Generated when a finding reaches Closed status.",
+        "placeholders": [
+            {"placeholder": "{{entity_id}}",            "maps_to": "entity_id",            "display_name": "Finding ID"},
+            {"placeholder": "{{severity}}",             "maps_to": "severity",             "display_name": "Severity"},
+            {"placeholder": "{{finding_type}}",         "maps_to": "finding_type",         "display_name": "Type"},
+            {"placeholder": "{{linked_validation}}",    "maps_to": "linked_validation",    "display_name": "Linked validation"},
+            {"placeholder": "{{due_date}}",             "maps_to": "due_date",             "display_name": "Due date"},
+            {"placeholder": "{{resolution_notes}}",     "maps_to": "resolution_notes",     "display_name": "Resolution notes"},
+            {"placeholder": "{{owner}}",                "maps_to": "owner",                "display_name": "Resolved by"},
+        ],
+    },
+]
+
+# ── Automation rules ───────────────────────────────────────────────────────────
+AUTOMATION_RULES = [
+    {
+        "name": "Notify validator on model registration",
+        "trigger_type": "Entity transition",
+        "trigger_condition": "Model moves to Registration stage",
+        "action": "Send email to validator group assigned to this model",
+        "entity_type": "Model",
+    },
+    {
+        "name": "Create validation subprocess",
+        "trigger_type": "Entity transition",
+        "trigger_condition": "Model moves to Validation stage",
+        "action": "Auto-create a Subprocess entity (type=Validation) linked to this model",
+        "entity_type": "Model",
+    },
+    {
+        "name": "Validation due date reminder",
+        "trigger_type": "Time-based",
+        "trigger_condition": "Today = validation_due_date - 7 days",
+        "action": "Send email reminder to owner and validator",
+        "entity_type": "Model",
+    },
+    {
+        "name": "Finding due date alert",
+        "trigger_type": "Time-based",
+        "trigger_condition": "Today = finding.due_date - 1 day",
+        "action": "Send urgent alert to model owner and governance team",
+        "entity_type": "Finding",
+    },
+    {
+        "name": "Unlock approval workflow",
+        "trigger_type": "Entity transition",
+        "trigger_condition": "Validation Workflow reaches Validation Sign-off",
+        "action": "Set Approval Workflow first stage from pending → current; status → In Progress",
+        "entity_type": "Subprocess",
+    },
+    {
+        "name": "Auto-generate monitoring report",
+        "trigger_type": "Time-based",
+        "trigger_condition": "Today = next_monitoring_date (quarterly)",
+        "action": "Generate Monitoring Report document and notify committee",
+        "entity_type": "Subprocess",
+    },
+    {
+        "name": "Risk tier auto-derive",
+        "trigger_type": "Attribute updated",
+        "trigger_condition": "financial_impact attribute changes value",
+        "action": "Recalculate risk_tier using derivation formula",
+        "entity_type": "Model",
+    },
+    {
+        "name": "Archive on retirement",
+        "trigger_type": "Entity transition",
+        "trigger_condition": "Model reaches Retired stage",
+        "action": "Set status = Archived; close all open subprocesses; notify governance",
+        "entity_type": "Model",
+    },
+]
+
+
 def get_risk_score(node_id: str) -> int:
     """
     Derived risk score 0–100.
