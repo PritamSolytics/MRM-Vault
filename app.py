@@ -1,1606 +1,1009 @@
 """
-MRM Vault | Enterprise Explorer v3
-Streamlit dashboard — production grade
+MRM Vault — Command Centre v2
+Dash + Cytoscape | Solytics Partners
 
-Fixes vs v2:
-  - applymap → map (pandas 2.1+)
-  - Multi-entity selection now works with proper session state
-  - Full interactive canvas (single-page unified view)
-  - Solytics color scheme: white base, navy #003366, teal #00A5A8, orange #FF6B35
-  - Clean, uncluttered layout with beautiful typography
-  - All KT-sourced content integrated (workflows, templates, automations, document templates,
-    variables, reports, landscape, conditional sections, attribute types)
+Design: One screen, maximum info, minimum clicks.
+  • Graph (centre) + instant detail panel (right) always visible
+  • 5 panel tabs: Overview / Linked / Permissions / Attributes / Activity
+  • Linked tab: clickable entity chips + workflow chips with mini progress bar
+  • Deep-dive drawer slides in from sidebar for full tables
+  • Relationship table always visible below graph
 
-Run:
-  pip install streamlit pandas plotly
-  streamlit run app.py
+Deploy: python app.py  →  http://localhost:8050
 """
 
-import streamlit as st
-import pandas as pd
-import math
-import io
-import csv
-from typing import List, Dict, Optional
+import dash, json as _json
+from dash import dcc, html, Input, Output, State, callback_context, dash_table, no_update, ALL
+import dash_cytoscape as cyto
 
 from data_model import (
-    NODES, LINKS, REL_TYPES, NODE_SCHEMA, STAGE_TRANSITIONS,
-    ENTITY, WORKFLOW, QUICK_ACCESS,
-    get_risk_score, get_status_color, get_risk_color,
-    ATTRIBUTE_LIBRARY, TEMPLATE_CONFIGS, SECTION_RULES,
-    DOCUMENT_TEMPLATES, AUTOMATION_RULES,
-    MASTER_ENTITY_TABLE, WORKFLOW_ENTITY_TABLE, STAGE_ENTITY_TABLE, TASK_ENTITY_TABLE,
-    MASTER_PERMISSION_TABLE, SECTION_TYPE_REGISTRY, get_permission,
-    MASTER_RELATIONSHIP_TABLE, RELATIONSHIP_SUBSETS,
+    NODES, LINKS, REL_TYPES, STAGE_TRANSITIONS, ENTITY, WORKFLOW,
+    QUICK_ACCESS, get_risk_score, get_status_color,
+    ATTRIBUTE_LIBRARY, TEMPLATE_CONFIGS, AUTOMATION_RULES,
+    MASTER_ENTITY_TABLE, WORKFLOW_ENTITY_TABLE, STAGE_ENTITY_TABLE,
+    TASK_ENTITY_TABLE, MASTER_PERMISSION_TABLE, SECTION_TYPE_REGISTRY,
+    get_permission, MASTER_RELATIONSHIP_TABLE, RELATIONSHIP_SUBSETS,
     VERSION_REGISTRY, EXECUTION_EVENTS, AUDIT_LOG, API_LOG,
 )
 from graph_engine import (
     get_outgoing, get_incoming, get_visible_ids, get_visible_links,
-    get_directed_link, impact_trace, upstream_trace,
-    get_consumers, advance_stage,
+    get_directed_link, impact_trace, upstream_trace, advance_stage,
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SOLYTICS BRAND PALETTE
-# Primary navy: #003366 | Teal accent: #00A5A8 | Orange: #FF6B35
-# Text: #1A1A2E | Surface: #FFFFFF | Background: #F7F9FC | Border: #E4E8EF
-# ─────────────────────────────────────────────────────────────────────────────
-BRAND = {
-    "navy":    "#003366",
-    "teal":    "#00A5A8",
-    "orange":  "#FF6B35",
-    "text":    "#1A1A2E",
-    "surface": "#FFFFFF",
-    "bg":      "#F7F9FC",
-    "border":  "#E4E8EF",
-    "muted":   "#6B7280",
-    "success": "#10B981",
-    "warning": "#F59E0B",
-    "danger":  "#EF4444",
-}
+cyto.load_extra_layouts()
 
-st.set_page_config(
-    page_title="MRM Vault | Solytics Partners",
-    page_icon="🏛",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# ── Brand ─────────────────────────────────────────────────────────────────────
+NAVY    = "#003366"
+TEAL    = "#00A5A8"
+ORANGE  = "#FF6B35"
+WHITE   = "#FFFFFF"
+BG      = "#F5F7FA"
+SURFACE = "#FFFFFF"
+BORDER  = "#E2E8F0"
+MUTED   = "#64748B"
+TEXT    = "#0F172A"
+SUCCESS = "#10B981"
+WARN    = "#F59E0B"
+DANGER  = "#EF4444"
+PURPLE  = "#7C3AED"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CSS — Solytics white theme with clean enterprise typography
-# ─────────────────────────────────────────────────────────────────────────────
-st.markdown(f"""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
-html, body, [class*="css"] {{
-  font-family: 'Plus Jakarta Sans', sans-serif;
-  color: {BRAND['text']};
-}}
-.main .block-container {{
-  padding: 1.2rem 2rem 2rem;
-  max-width: 1700px;
-}}
-
-/* ── Sidebar ── */
-[data-testid="stSidebar"] {{
-  background: {BRAND['navy']} !important;
-  border-right: none;
-}}
-[data-testid="stSidebar"] * {{ color: #C8D8EC !important; }}
-[data-testid="stSidebar"] label {{
-  color: #7FA3CC !important;
-  font-size: 11px !important;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-}}
-[data-testid="stSidebar"] h3 {{
-  color: #E8F1FB !important;
-  font-size: 10px !important;
-  text-transform: uppercase;
-  letter-spacing: .1em;
-  font-weight: 700;
-}}
-[data-testid="stSidebar"] .stButton button {{
-  background: rgba(255,255,255,0.07) !important;
-  border: 1px solid rgba(255,255,255,0.12) !important;
-  color: #C8D8EC !important;
-  border-radius: 6px !important;
-  font-size: 12px !important;
-  text-align: left !important;
-  width: 100% !important;
-  transition: all .15s !important;
-}}
-[data-testid="stSidebar"] .stButton button:hover {{
-  background: rgba(0,165,168,0.25) !important;
-  border-color: {BRAND['teal']} !important;
-  color: white !important;
-}}
-
-/* ── Header ── */
-.vault-header {{
-  background: white;
-  border-bottom: 2px solid {BRAND['border']};
-  padding: 16px 0 12px;
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-}}
-.vault-wordmark {{
-  font-size: 20px;
-  font-weight: 800;
-  color: {BRAND['navy']};
-  letter-spacing: -.02em;
-}}
-.vault-wordmark span {{
-  color: {BRAND['teal']};
-}}
-.vault-subtitle {{
-  font-size: 12px;
-  color: {BRAND['muted']};
-  margin-top: 1px;
-}}
-.vault-badge {{
-  display: inline-block;
-  background: {BRAND['navy']};
-  color: white;
-  font-size: 9px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 4px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  margin-right: 6px;
-}}
-.vault-badge.teal {{ background: {BRAND['teal']}; }}
-.vault-badge.orange {{ background: {BRAND['orange']}; }}
-
-/* ── KPI bar ── */
-.kpi-row {{
-  display: flex;
-  gap: 10px;
-  margin-bottom: 18px;
-  flex-wrap: wrap;
-}}
-.kpi-card {{
-  background: white;
-  border: 1px solid {BRAND['border']};
-  border-radius: 10px;
-  padding: 12px 16px;
-  flex: 1;
-  min-width: 120px;
-  position: relative;
-  overflow: hidden;
-}}
-.kpi-card::before {{
-  content: '';
-  position: absolute;
-  top: 0; left: 0;
-  width: 3px; height: 100%;
-  background: {BRAND['teal']};
-  border-radius: 10px 0 0 10px;
-}}
-.kpi-label {{ font-size: 10px; font-weight: 600; color: {BRAND['muted']}; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 4px; }}
-.kpi-value {{ font-size: 22px; font-weight: 800; color: {BRAND['navy']}; line-height: 1; }}
-.kpi-sub   {{ font-size: 10.5px; color: {BRAND['muted']}; margin-top: 3px; }}
-
-/* ── Section header ── */
-.sec-hdr {{
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .09em;
-  color: {BRAND['muted']};
-  border-bottom: 1px solid {BRAND['border']};
-  padding-bottom: 5px;
-  margin: 14px 0 8px;
-}}
-
-/* ── Badges / pills ── */
-.pill {{
-  display: inline-block;
-  font-size: 9.5px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 20px;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-}}
-.pill-entity   {{ background: #EBF5FF; color: {BRAND['navy']}; border: 1px solid #BDD8F5; }}
-.pill-workflow {{ background: #E6FAFA; color: {BRAND['teal']}; border: 1px solid #A3DFE0; }}
-.pill-high     {{ background: #FEE2E2; color: #991B1B; }}
-.pill-medium   {{ background: #FEF3C7; color: #92400E; }}
-.pill-low      {{ background: #D1FAE5; color: #065F46; }}
-.pill-static   {{ background: #EDE9FE; color: #5B21B6; }}
-.pill-dynamic  {{ background: #FFF7ED; color: #C2410C; }}
-.pill-system   {{ background: #F3F4F6; color: #374151; }}
-.pill-M        {{ background: #D1FAE5; color: #065F46; font-weight: 800; }}
-.pill-V        {{ background: #DBEAFE; color: #1E40AF; }}
-.pill-H        {{ background: #F3F4F6; color: #9CA3AF; }}
-
-/* ── Node detail ── */
-.node-hero   {{ padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid {BRAND['border']}; }}
-.node-name   {{ font-size: 16px; font-weight: 800; color: {BRAND['navy']}; margin: 6px 0 4px; }}
-.node-desc   {{ font-size: 12px; color: {BRAND['muted']}; line-height: 1.6; }}
-.meta-grid   {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }}
-.meta-item .ml {{ font-size: 9px; font-weight: 700; color: {BRAND['muted']}; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 2px; }}
-.meta-item .mv {{ font-size: 12px; font-weight: 600; color: {BRAND['text']}; }}
-
-/* ── Relationship items ── */
-.rel-row {{
-  display: flex;
-  align-items: center;
-  padding: 7px 10px;
-  background: {BRAND['bg']};
-  border: 1px solid {BRAND['border']};
-  border-radius: 8px;
-  margin-bottom: 4px;
-  font-size: 12px;
-  gap: 8px;
-  cursor: pointer;
-  transition: all .12s;
-}}
-.rel-row:hover {{ border-color: {BRAND['teal']}; background: #E6FAFA; }}
-.rel-icon-e {{ background: #EBF5FF; color: {BRAND['navy']}; border-radius: 4px; padding: 1px 5px; font-size: 8px; font-weight: 800; flex-shrink: 0; }}
-.rel-icon-w {{ background: #E6FAFA; color: {BRAND['teal']}; border-radius: 4px; padding: 1px 5px; font-size: 8px; font-weight: 800; flex-shrink: 0; }}
-.cat-pill   {{ font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 12px; flex-shrink: 0; }}
-
-/* ── Stage tracker ── */
-.stage-item {{ display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid {BRAND['bg']}; font-size: 12px; }}
-.s-done {{ color: {BRAND['success']}; font-weight: 600; }}
-.s-cur  {{ color: {BRAND['teal']}; font-weight: 700; }}
-.s-pend {{ color: {BRAND['muted']}; }}
-
-/* ── Score bar ── */
-.sbar-wrap {{ background: {BRAND['border']}; border-radius: 4px; height: 5px; margin: 3px 0; }}
-.sbar      {{ height: 5px; border-radius: 4px; }}
-
-/* ── Impact chips ── */
-.chip-impact {{ background: #D1FAE5; border: 1px solid #6EE7B7; border-radius: 6px; padding: 4px 8px; font-size: 11px; color: #065F46; margin-bottom: 3px; }}
-.chip-up     {{ background: #FFF7ED; border: 1px solid #FED7AA; border-radius: 6px; padding: 4px 8px; font-size: 11px; color: #C2410C; margin-bottom: 3px; }}
-.chip-deg    {{ background: #FEE2E2; border: 1px solid #FCA5A5; border-radius: 6px; padding: 4px 8px; font-size: 11px; color: #991B1B; margin-bottom: 3px; }}
-
-/* ── Artifact pill ── */
-.art-pill {{ display:inline-flex; align-items:center; gap:4px; padding:3px 9px; background:{BRAND['bg']}; border:1px solid {BRAND['border']}; border-radius:5px; font-size:11px; margin:2px; color:{BRAND['text']}; }}
-
-/* ── Activity ── */
-.act-item {{ display:flex; gap:8px; padding:5px 0; border-bottom:1px solid {BRAND['bg']}; }}
-.act-dot  {{ width:6px; height:6px; border-radius:50%; background:{BRAND['teal']}; margin-top:5px; flex-shrink:0; }}
-.act-text {{ font-size:11.5px; color:{BRAND['text']}; line-height:1.5; }}
-.act-time {{ font-size:10px; color:{BRAND['muted']}; }}
-
-/* ── Timeline event ── */
-.tl-evt {{
-  background: white;
-  border: 1px solid {BRAND['border']};
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin-bottom: 6px;
-  border-left: 3px solid {BRAND['teal']};
-}}
-.tl-evt.approved {{ border-left-color: {BRAND['success']}; }}
-.tl-evt.review   {{ border-left-color: {BRAND['warning']}; }}
-
-/* ── Version chain ── */
-.ver-node {{
-  display: inline-block;
-  background: white;
-  border: 1.5px solid {BRAND['border']};
-  border-radius: 8px;
-  padding: 8px 14px;
-  min-width: 130px;
-  margin: 4px;
-  vertical-align: top;
-  text-align: center;
-}}
-.ver-node.active   {{ border-color: {BRAND['teal']};   background: #E6FAFA; }}
-.ver-node.approved {{ border-color: {BRAND['success']}; background: #D1FAE5; }}
-.ver-node.superseded {{ border-color: {BRAND['muted']}; background: {BRAND['bg']}; opacity: .7; }}
-
-/* ── Audit row ── */
-.aud-row {{
-  padding: 8px 12px;
-  border-left: 3px solid {BRAND['border']};
-  background: {BRAND['bg']};
-  border-radius: 0 7px 7px 0;
-  margin-bottom: 6px;
-  font-size: 11.5px;
-}}
-
-/* ── API pill ── */
-.apill {{
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-family: 'JetBrains Mono', monospace;
-}}
-.apill-GET   {{ background: #D1FAE5; color: #065F46; }}
-.apill-POST  {{ background: #DBEAFE; color: #1E40AF; }}
-.apill-PATCH {{ background: #FEF3C7; color: #92400E; }}
-.apill-200   {{ background: #D1FAE5; color: #065F46; }}
-.apill-201   {{ background: #DBEAFE; color: #1E40AF; }}
-
-/* ── Section perm card ── */
-.spc {{
-  background: white;
-  border: 1px solid {BRAND['border']};
-  border-radius: 10px;
-  padding: 12px 14px;
-  margin-bottom: 8px;
-}}
-.spc h4 {{ font-size: 13px; font-weight: 700; color: {BRAND['navy']}; margin: 0 0 4px; }}
-
-/* ── Canvas panel ── */
-.canvas-wrap {{
-  background: white;
-  border: 1px solid {BRAND['border']};
-  border-radius: 12px;
-  overflow: hidden;
-}}
-
-/* ── Mono ── */
-.mono {{ font-family: 'JetBrains Mono', monospace; font-size: 11px; }}
-
-/* ── Breadcrumb ── */
-.breadcrumb {{ display:flex; align-items:center; gap:4px; margin-bottom:10px; flex-wrap:wrap; }}
-.bc-item {{ font-size:12px; color:{BRAND['muted']}; }}
-.bc-sep  {{ font-size:12px; color:{BRAND['border']}; }}
-.bc-curr {{ font-size:12px; color:{BRAND['teal']}; font-weight:600; }}
-
-/* ── Table fix ── */
-.stDataFrame {{ border-radius: 8px; overflow: hidden; border: 1px solid {BRAND['border']} !important; }}
-
-/* ── Tab underline ── */
-.stTabs [data-baseweb="tab-list"] {{ background: {BRAND['bg']}; border-radius: 10px 10px 0 0; border-bottom: 2px solid {BRAND['border']}; padding: 0 8px; }}
-.stTabs [data-baseweb="tab"] {{ font-size: 12.5px; font-weight: 600; color: {BRAND['muted']}; }}
-.stTabs [aria-selected="true"] {{ color: {BRAND['navy']} !important; }}
-</style>
-""", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SESSION STATE
-# ─────────────────────────────────────────────────────────────────────────────
-def _init():
-    defs = dict(
-        selected_id="credit_risk_model",
-        depth=1,
-        show_entities=True,
-        show_workflows=True,
-        cat_filter="All",
-        history=["credit_risk_model"],
-        multi_entity_sel=["Model"],    # for entity sub-template tab
-        ver_entity="All",
-        aud_entity="All",
-        aud_field="All",
-        aud_user="All",
-        exec_entity="All",
-        subset_filter="All",
-        perm_entity="All",
-    )
-    for k, v in defs.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-_init()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CATEGORY COLOURS
-# ─────────────────────────────────────────────────────────────────────────────
 CAT_CLR = {
-    "lineage":    {"stroke": "#1D4ED8", "bg": "#DBEAFE", "text": "#1D4ED8"},
-    "governance": {"stroke": "#7C3AED", "bg": "#EDE9FE", "text": "#6D28D9"},
-    "validation": {"stroke": "#0891B2", "bg": "#CFFAFE", "text": "#0E7490"},
-    "monitoring": {"stroke": "#059669", "bg": "#D1FAE5", "text": "#065F46"},
-    "lifecycle":  {"stroke": BRAND["orange"], "bg": "#FFF7ED", "text": "#C2410C"},
-    "issue":      {"stroke": BRAND["danger"], "bg": "#FEE2E2", "text": "#991B1B"},
-    "output":     {"stroke": BRAND["teal"],   "bg": "#E6FAFA", "text": "#0E5F60"},
-    "default":    {"stroke": BRAND["muted"],  "bg": BRAND["bg"], "text": BRAND["muted"]},
+    "lineage":    {"line":"#2563EB","bg":"#EFF6FF","txt":"#1D4ED8"},
+    "governance": {"line":PURPLE,   "bg":"#F5F3FF","txt":PURPLE},
+    "validation": {"line":"#0891B2","bg":"#ECFEFF","txt":"#0E7490"},
+    "monitoring": {"line":SUCCESS,  "bg":"#F0FDF4","txt":"#15803D"},
+    "lifecycle":  {"line":ORANGE,   "bg":"#FFF7ED","txt":"#C2410C"},
+    "issue":      {"line":DANGER,   "bg":"#FFF1F2","txt":"#BE123C"},
+    "output":     {"line":TEAL,     "bg":"#F0FDFA","txt":"#0F766E"},
+    "default":    {"line":MUTED,    "bg":BG,        "txt":MUTED},
 }
+RISK_CLR  = {"High":(DANGER,"#FFF1F2"),"Medium":(WARN,"#FFFBEB"),"Low":(SUCCESS,"#F0FDF4")}
+PERM_CLR  = {"M":("#D1FAE5","#065F46"),"V":("#DBEAFE","#1E40AF"),"H":("#F1F5F9","#94A3B8")}
+STYPE_CLR = {"static":("#EDE9FE","#5B21B6"),"dynamic":("#FFF7ED","#C2410C"),"system":("#F1F5F9","#374151")}
 
-def navigate_to(node_id: str):
-    if node_id not in NODES:
-        return
-    st.session_state.selected_id = node_id
-    h = st.session_state.history
-    if not h or h[-1] != node_id:
-        h.append(node_id)
-    if len(h) > 8:
-        h.pop(0)
-    st.rerun()
+# ── Cytoscape stylesheet ──────────────────────────────────────────────────────
+CY_SS = [
+    {"selector":"node","style":{
+        "width":175,"height":68,"shape":"round-rectangle",
+        "background-color":WHITE,"border-color":BORDER,"border-width":1.5,
+        "label":"data(label)","text-wrap":"wrap","text-max-width":148,
+        "font-size":11.5,"font-weight":"600",
+        "font-family":"'DM Sans',system-ui,sans-serif",
+        "color":TEXT,"text-valign":"center","text-halign":"center","padding":10,
+        "shadow-blur":12,"shadow-color":"rgba(15,23,42,0.07)","shadow-offset-y":3,
+        "transition-property":"border-color,border-width,shadow-blur",
+        "transition-duration":"0.15s",
+    }},
+    {"selector":"node[node_type='Entity']","style":{
+        "background-color":WHITE,"border-color":BORDER,
+        "border-left-color":TEAL,"border-left-width":3,
+    }},
+    {"selector":"node[node_type='Workflow']","style":{
+        "background-color":NAVY,"border-color":NAVY,"color":"#E2E8F0",
+    }},
+    {"selector":"node:selected","style":{
+        "border-color":TEAL,"border-width":2.5,
+        "shadow-blur":24,"shadow-color":"rgba(0,165,168,0.28)",
+    }},
+    {"selector":"node.dimmed","style":{"opacity":0.25}},
+    {"selector":"node[risk='High']","style":{"border-color":DANGER,"border-width":2}},
+    {"selector":"node[risk='Medium']","style":{"border-color":WARN,"border-width":1.8}},
+    {"selector":"edge","style":{
+        "curve-style":"bezier","target-arrow-shape":"triangle",
+        "target-arrow-color":"#CBD5E1","line-color":"#CBD5E1","width":1.2,
+        "font-size":9,"font-family":"'DM Sans',system-ui,sans-serif","color":MUTED,
+        "label":"data(short_label)","text-background-color":WHITE,
+        "text-background-opacity":1,"text-background-padding":"2px",
+        "edge-text-rotation":"autorotate",
+        "transition-property":"line-color,width,opacity","transition-duration":"0.15s",
+    }},
+    *[{"selector":f"edge[category='{cat}']","style":{
+        "line-color":info["line"],"target-arrow-color":info["line"],"color":info["txt"],
+    }} for cat, info in CAT_CLR.items()],
+    {"selector":"edge.active","style":{"width":2.5,"opacity":1}},
+    {"selector":"edge.dimmed","style":{"opacity":0.12}},
+]
 
-def trunc(s: str, n: int) -> str:
-    return s if len(s) <= n else s[:n-1] + "…"
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SAFE PANDAS MAP HELPER (works on pandas 1.x and 2.x)
-# ─────────────────────────────────────────────────────────────────────────────
-def safe_map(styler, fn, subset=None):
-    """Use Styler.map (pandas≥2.1) or fall back to applymap."""
-    try:
-        return styler.map(fn, subset=subset)
-    except AttributeError:
-        return styler.applymap(fn, subset=subset)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SVG GRAPH
-# ─────────────────────────────────────────────────────────────────────────────
-def _radial_pos(ids, sel, W=920, H=560):
-    pos = {}
-    if sel not in ids:
-        return pos
-    pos[sel] = (W / 2, H / 2)
-    others = [i for i in ids if i != sel]
-    others.sort(key=lambda i: (0 if NODES[i]["type"] == WORKFLOW else 1))
-    n = len(others)
-    r = min(min(W, H) * 0.36, 235)
-    for idx, nid in enumerate(others):
-        a = (2 * math.pi * idx / max(n, 1)) - math.pi / 2
-        pos[nid] = (W / 2 + r * math.cos(a), H / 2 + r * math.sin(a))
-    return pos
-
-def render_svg(ids, sel, cat_filter="All"):
-    W, H, NW, NH = 920, 560, 200, 72
-    pos = _radial_pos(ids, sel, W, H)
-    links = get_visible_links(ids)
-
-    MARKERS = {
-        "lineage": "arr-blue", "governance": "arr-purple", "validation": "arr-teal",
-        "monitoring": "arr-green", "lifecycle": "arr-orange", "issue": "arr-red",
-        "output": "arr-teal",
-    }
-    MDEF = {
-        "arr-blue": "#1D4ED8", "arr-purple": "#7C3AED", "arr-teal": "#0891B2",
-        "arr-green": "#059669", "arr-orange": BRAND["orange"], "arr-red": BRAND["danger"],
-    }
-
-    p = [f'<svg viewBox="0 0 {W} {H}" width="100%" height="{H}" xmlns="http://www.w3.org/2000/svg">']
-    p.append("<defs>")
-    for mid, col in MDEF.items():
-        p.append(f'<marker id="{mid}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
-                 f'<path d="M2 1L8 5L2 9" fill="none" stroke="{col}" stroke-width="1.4" stroke-linecap="round"/></marker>')
-    p.append('<marker id="arr-dark" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
-             '<path d="M2 1L8 5L2 9" fill="none" stroke="#9CA3AF" stroke-width="1.2" stroke-linecap="round"/></marker>')
-    p.append('<filter id="shd"><feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#003366" flood-opacity="0.07"/></filter>')
-    p.append('<filter id="shd-sel"><feDropShadow dx="0" dy="4" stdDeviation="12" flood-color="#00A5A8" flood-opacity="0.22"/></filter>')
-    p.append('<pattern id="dots" x="0" y="0" width="28" height="28" patternUnits="userSpaceOnUse">'
-             '<circle cx="14" cy="14" r="0.8" fill="#D1D5DB" opacity="0.5"/></pattern>')
-    p.append("</defs>")
-
-    p.append(f'<rect width="{W}" height="{H}" fill="#FAFBFD" rx="12"/>')
-    p.append(f'<rect width="{W}" height="{H}" fill="url(#dots)" rx="12"/>')
-
-    # Edges
-    for lk in links:
-        src, tgt = lk["source"], lk["target"]
-        if src not in pos or tgt not in pos:
-            continue
-        rt  = REL_TYPES.get(lk["relType"], {})
-        cat = rt.get("category", "default")
+# ── Build elements ────────────────────────────────────────────────────────────
+def build_elements(sel="credit_risk_model", depth=2, cat_filter="All"):
+    vis  = get_visible_ids(sel, depth)
+    lnks = get_visible_links(vis)
+    els  = []
+    for nid in vis:
+        nd  = NODES[nid]
+        els.append({"data":{
+            "id":nid,"label":f"{nd['name']}\n{nd['subtype']}",
+            "name":nd["name"],"node_type":nd["type"],"subtype":nd["subtype"],
+            "risk":nd.get("risk",""),"status":nd.get("status",""),
+            "score":get_risk_score(nid),"owner":nd.get("owner",""),
+        },"selected":nid==sel})
+    for lk in lnks:
+        rt  = REL_TYPES.get(lk["relType"],{})
+        cat = rt.get("category","default")
         if cat_filter != "All" and cat != cat_filter.lower():
             continue
-        hi = (src == sel or tgt == sel)
-        clr = CAT_CLR.get(cat, CAT_CLR["default"])
-        stroke = clr["stroke"] if hi else "#E4E8EF"
-        sw     = "1.8" if hi else "0.9"
-        mid    = MARKERS.get(cat, "arr-dark") if hi else "arr-dark"
+        els.append({"data":{
+            "id":f"{lk['source']}__{lk['target']}",
+            "source":lk["source"],"target":lk["target"],
+            "label":f"{rt.get('label','')}  {lk.get('cardinality','')}",
+            "short_label":rt.get("label","")[:14],
+            "category":cat,"cardinality":lk.get("cardinality",""),
+        }})
+    return els
 
-        x1, y1 = pos[src]
-        x2, y2 = pos[tgt]
-        dx, dy = x2 - x1, y2 - y1
-        dist   = math.sqrt(dx*dx + dy*dy) or 1
-        cx_    = (x1+x2)/2 - dy/dist * 20
-        cy_    = (y1+y2)/2 + dx/dist * 20
-        pad    = math.sqrt((NW/2)**2*(dx/dist)**2 + (NH/2)**2*(dy/dist)**2)
-        sx, sy = x1 + dx/dist*(pad+4),  y1 + dy/dist*(pad+4)
-        ex, ey = x2 - dx/dist*(pad+14), y2 - dy/dist*(pad+14)
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _pill(text, bg=NAVY, col=WHITE, size=9.5):
+    return html.Span(text, style={
+        "background":bg,"color":col,"fontSize":size,"fontWeight":700,
+        "padding":"2px 9px","borderRadius":20,"display":"inline-block",
+        "textTransform":"uppercase","letterSpacing":".05em","marginRight":4,
+    })
 
-        p.append(f'<path d="M{sx:.1f} {sy:.1f} Q{cx_:.1f} {cy_:.1f} {ex:.1f} {ey:.1f}" '
-                 f'fill="none" stroke="{stroke}" stroke-width="{sw}" marker-end="url(#{mid})"/>')
+def _tag(text, bg=BG, col=MUTED):
+    return html.Span(text, style={
+        "background":bg,"color":col,"fontSize":10,"fontWeight":600,
+        "padding":"2px 8px","borderRadius":5,"display":"inline-block","marginRight":4,
+    })
 
-        if hi:
-            lx = 0.25*sx + 0.5*cx_ + 0.25*ex
-            ly = 0.25*sy + 0.5*cy_ + 0.25*ey
-            lbl = rt.get("label", lk["relType"])[:14]
-            card = lk.get("cardinality", "")
-            full = f"{lbl}  {card}" if card else lbl
-            lw   = len(full) * 6.1 + 12
-            p.append(f'<rect x="{lx-lw/2:.1f}" y="{ly-9:.1f}" width="{lw:.1f}" height="18" '
-                     f'rx="5" fill="{clr["bg"]}" stroke="{clr["stroke"]}" stroke-width="0.6"/>')
-            p.append(f'<text x="{lx:.1f}" y="{ly+1:.1f}" text-anchor="middle" dominant-baseline="middle" '
-                     f'font-size="8.5" font-weight="700" fill="{clr["text"]}" font-family="Plus Jakarta Sans,system-ui">{full}</text>')
+def _sec(text):
+    return html.Div(text, style={
+        "fontSize":9.5,"fontWeight":700,"textTransform":"uppercase","letterSpacing":".09em",
+        "color":MUTED,"borderBottom":f"1px solid {BORDER}",
+        "paddingBottom":4,"marginBottom":8,"marginTop":14,
+    })
 
-    # Nodes
-    order = [i for i in ids if i != sel] + ([sel] if sel in ids else [])
-    for nid in order:
-        if nid not in pos:
-            continue
-        nd = NODES[nid]
-        x, y = pos[nid]
-        rx_, ry_ = x - NW/2, y - NH/2
-        is_sel  = (nid == sel)
-        is_ent  = nd["type"] == ENTITY
-        fill    = "white" if is_ent else BRAND["navy"]
-        bdr_col = BRAND["teal"] if is_sel else (BRAND["border"] if is_ent else BRAND["navy"])
-        bdr_w   = "2.5" if is_sel else "1"
-        filt    = "url(#shd-sel)" if is_sel else "url(#shd)"
-        accent  = BRAND["teal"] if is_ent else BRAND["orange"]
+def _card(children, p=14, mb=12, extra=None):
+    s = {"background":SURFACE,"border":f"1px solid {BORDER}","borderRadius":10,
+         "padding":p,"marginBottom":mb}
+    if extra: s.update(extra)
+    return html.Div(children, style=s)
 
-        p.append(f'<g filter="{filt}">')
-        p.append(f'<rect x="{rx_:.1f}" y="{ry_:.1f}" width="{NW}" height="{NH}" '
-                 f'rx="12" fill="{fill}" stroke="{bdr_col}" stroke-width="{bdr_w}"/>')
-        p.append(f'<rect x="{rx_:.1f}" y="{ry_:.1f}" width="4" height="{NH}" '
-                 f'rx="2" fill="{accent}"/>')
-
-        ic_bg  = "#EBF5FF" if is_ent else "rgba(255,255,255,0.12)"
-        ic_col = BRAND["navy"] if is_ent else BRAND["teal"]
-        ic_lbl = "EN" if is_ent else "WF"
-        icx, icy = rx_+24, y
-        p.append(f'<circle cx="{icx:.1f}" cy="{icy:.1f}" r="12" fill="{ic_bg}"/>')
-        p.append(f'<text x="{icx:.1f}" y="{icy:.1f}" text-anchor="middle" dominant-baseline="middle" '
-                 f'font-size="8" font-weight="800" fill="{ic_col}" font-family="Plus Jakarta Sans,system-ui">{ic_lbl}</text>')
-
-        nm_col = BRAND["navy"] if is_ent else "#E8F1FB"
-        sb_col = BRAND["muted"] if is_ent else "#7FA3CC"
-        p.append(f'<text x="{rx_+44:.1f}" y="{ry_+22:.1f}" dominant-baseline="middle" '
-                 f'font-size="12" font-weight="700" fill="{nm_col}" '
-                 f'font-family="Plus Jakarta Sans,system-ui">{trunc(nd["name"], 21)}</text>')
-        p.append(f'<text x="{rx_+44:.1f}" y="{ry_+37:.1f}" dominant-baseline="middle" '
-                 f'font-size="10" fill="{sb_col}" font-family="Plus Jakarta Sans,system-ui">{nd["subtype"]}</text>')
-
-        bv = nd.get("risk") or nd.get("status", "")
-        if bv and bv not in ("-", ""):
-            bg_b, tc_b = get_risk_color(bv) if nd.get("risk") else get_status_color(nd.get("status",""))
-            bw_ = len(str(bv)) * 6 + 12
-            p.append(f'<rect x="{rx_+44:.1f}" y="{ry_+49:.1f}" width="{bw_:.1f}" height="14" rx="7" fill="{bg_b}"/>')
-            p.append(f'<text x="{rx_+44+bw_/2:.1f}" y="{ry_+56:.1f}" text-anchor="middle" dominant-baseline="middle" '
-                     f'font-size="8.5" font-weight="700" fill="{tc_b}" font-family="Plus Jakarta Sans,system-ui">{bv}</text>')
-        p.append("</g>")
-
-    # Legend
-    leg = [("lineage","Lineage"),("governance","Governance"),("validation","Validation"),
-           ("monitoring","Monitoring"),("lifecycle","Lifecycle"),("issue","Issue")]
-    lx_ = 14
-    lw_total = 16 + len(leg) * 92
-    p.append(f'<rect x="10" y="{H-28}" width="{lw_total}" height="20" rx="5" '
-             f'fill="rgba(255,255,255,0.92)" stroke="{BRAND["border"]}" stroke-width="0.5"/>')
-    for cat_, lab_ in leg:
-        c = CAT_CLR.get(cat_, CAT_CLR["default"])
-        p.append(f'<rect x="{lx_:.1f}" y="{H-20}" width="14" height="2" rx="1" fill="{c["stroke"]}"/>')
-        p.append(f'<text x="{lx_+18:.1f}" y="{H-16}" font-size="9" fill="{c["text"]}" '
-                 f'font-family="Plus Jakarta Sans,system-ui">{lab_}</text>')
-        lx_ += 92
-    p.append("</svg>")
-    return "".join(p)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DETAIL PANEL
-# ─────────────────────────────────────────────────────────────────────────────
-def render_detail(node_id: str):
-    nd = NODES.get(node_id)
-    if not nd:
-        st.caption("No entity selected.")
-        return
-    out_lk = get_outgoing(node_id)
-    in_lk  = get_incoming(node_id)
-    impacted = impact_trace(node_id)
-    upstream = upstream_trace(node_id)
-    consumers = get_consumers(node_id)
-    score  = get_risk_score(node_id)
-    is_ent = nd["type"] == ENTITY
-    sc_col = BRAND["danger"] if score >= 70 else BRAND["warning"] if score >= 40 else BRAND["success"]
-    sc_bg  = "#FEE2E2" if score >= 70 else "#FEF3C7" if score >= 40 else "#D1FAE5"
-
-    type_cls = "pill-entity" if is_ent else "pill-workflow"
-    st.markdown(f"""
-    <div class="node-hero">
-      <span class="pill {type_cls}">{nd['type']}</span>
-      <span style="font-size:10px;color:{BRAND['muted']};margin-left:5px">{nd['subtype']}</span>
-      <div class="node-name">{nd['name']}</div>
-      <div class="node-desc">{nd.get('summary','')}</div>
-    </div>""", unsafe_allow_html=True)
-
-    sc_, _ = get_status_color(nd.get("status",""))
-    ver    = nd.get("current_version","—")
-    st.markdown(f"""
-    <div class="meta-grid">
-      <div class="meta-item"><div class="ml">Owner</div><div class="mv">{nd['owner']}</div></div>
-      <div class="meta-item"><div class="ml">Status</div>
-        <div class="mv" style="color:{sc_}">{nd.get('status','—')}</div></div>
-      <div class="meta-item"><div class="ml">{"Risk" if is_ent else "Stage"}</div>
-        <div class="mv">{nd.get('risk','—') if is_ent else nd.get('stage','—')}</div></div>
-      <div class="meta-item"><div class="ml">Version</div>
-        <div class="mv mono">{ver}</div></div>
-      {"<div class='meta-item'><div class='ml'>Risk Score</div><div class='mv'><span style='background:"+sc_bg+";color:"+sc_col+";padding:2px 8px;border-radius:4px;font-weight:800'>"+str(score)+"/100</span></div></div>" if is_ent else ""}
-      <div class="meta-item"><div class="ml">Jurisdiction</div>
-        <div class="mv" style="font-size:11px">{nd.get('jurisdiction','—')}</div></div>
-    </div>""", unsafe_allow_html=True)
-
-    if is_ent and score > 0:
-        st.markdown(f'<div class="sbar-wrap"><div class="sbar" style="width:{score}%;background:{sc_col}"></div></div>',
-                    unsafe_allow_html=True)
-
-    # Downstream
-    if impacted:
-        st.markdown(f'<div class="sec-hdr">Downstream impact — {len(impacted)} affected</div>', unsafe_allow_html=True)
-        for iid in impacted[:5]:
-            n2 = NODES.get(iid,{})
-            lk = get_directed_link(node_id, iid)
-            cat = REL_TYPES.get(lk["relType"] if lk else "",{}).get("category","default")
-            c   = CAT_CLR.get(cat, CAT_CLR["default"])
-            st.markdown(f'<div class="chip-impact">↓ {n2.get("name",iid)} '
-                        f'<span class="cat-pill" style="background:{c["bg"]};color:{c["text"]}">{cat}</span></div>',
-                        unsafe_allow_html=True)
-
-    # Upstream
-    if upstream:
-        deg = [u for u in upstream if NODES.get(u,{}).get("status") in ("Under Review","Not Started")]
-        st.markdown(f'<div class="sec-hdr">Upstream dependencies — {len(upstream)}</div>', unsafe_allow_html=True)
-        for uid in upstream[:5]:
-            n2   = NODES.get(uid,{})
-            lk   = get_directed_link(uid, node_id)
-            lbl  = REL_TYPES.get(lk["relType"] if lk else "",{}).get("label","")
-            is_d = uid in deg
-            cls  = "chip-deg" if is_d else "chip-up"
-            st.markdown(f'<div class="{cls}">↑ {n2.get("name",uid)} '
-                        f'<span style="font-size:10px"> via {lbl}{"  ⚠" if is_d else ""}</span></div>',
-                        unsafe_allow_html=True)
-
-    # Outgoing
-    if out_lk:
-        st.markdown(f'<div class="sec-hdr">Outgoing — {len(out_lk)}</div>', unsafe_allow_html=True)
-        for lk in out_lk:
-            n2 = NODES.get(lk["target"],{})
-            rt = REL_TYPES.get(lk["relType"],{})
-            cat = rt.get("category","default")
-            c   = CAT_CLR.get(cat, CAT_CLR["default"])
-            ic  = "rel-icon-e" if n2.get("type")==ENTITY else "rel-icon-w"
-            il  = "E" if n2.get("type")==ENTITY else "WF"
-            col1, col2 = st.columns([5,1])
-            with col1:
-                st.markdown(f'<div class="rel-row"><span class="{ic}">{il}</span>'
-                            f'<span style="flex:1">{n2.get("name","")}</span>'
-                            f'<span class="cat-pill" style="background:{c["bg"]};color:{c["text"]}">{rt.get("label","")}</span>'
-                            f'<span style="font-size:9px;color:{BRAND["muted"]}">{lk.get("cardinality","")}</span>'
-                            f'</div>', unsafe_allow_html=True)
-            with col2:
-                if st.button("→", key=f"o_{node_id}_{lk['target']}"):
-                    navigate_to(lk["target"])
-
-    # Incoming
-    if in_lk:
-        st.markdown(f'<div class="sec-hdr">Incoming — {len(in_lk)}</div>', unsafe_allow_html=True)
-        for lk in in_lk:
-            n2 = NODES.get(lk["source"],{})
-            rt = REL_TYPES.get(lk["relType"],{})
-            cat = rt.get("category","default")
-            c   = CAT_CLR.get(cat, CAT_CLR["default"])
-            ic  = "rel-icon-e" if n2.get("type")==ENTITY else "rel-icon-w"
-            il  = "E" if n2.get("type")==ENTITY else "WF"
-            col1, col2 = st.columns([5,1])
-            with col1:
-                st.markdown(f'<div class="rel-row"><span class="{ic}">{il}</span>'
-                            f'<span style="flex:1">{n2.get("name","")}</span>'
-                            f'<span class="cat-pill" style="background:{c["bg"]};color:{c["text"]}">← {rt.get("label","")}</span>'
-                            f'<span style="font-size:9px;color:{BRAND["muted"]}">{lk.get("cardinality","")}</span>'
-                            f'</div>', unsafe_allow_html=True)
-            with col2:
-                if st.button("→", key=f"i_{node_id}_{lk['source']}"):
-                    navigate_to(lk["source"])
-
-    # Stages
-    if nd.get("stages"):
-        st.markdown('<div class="sec-hdr">Lifecycle stages</div>', unsafe_allow_html=True)
-        for s in nd["stages"]:
-            if s["status"]=="done":    ico,cls = "✓","s-done"
-            elif s["status"]=="current": ico,cls = "●","s-cur"
-            else:                        ico,cls = "○","s-pend"
-            st.markdown(f'<div class="stage-item"><span>{ico}</span><span class="{cls}">{s["name"]}</span></div>',
-                        unsafe_allow_html=True)
-        ci = next((i for i,s in enumerate(nd["stages"]) if s["status"]=="current"), -1)
-        if 0 <= ci < len(nd["stages"])-1:
-            if st.button("⏭ Advance stage", key=f"adv_{node_id}", type="primary"):
-                r = advance_stage(node_id)
-                st.success(r["new_stage"]) if r["ok"] else st.error(r["message"])
-                if r["ok"]: st.rerun()
-
-    # Attributes
-    if nd.get("attributes"):
-        st.markdown('<div class="sec-hdr">Attributes</div>', unsafe_allow_html=True)
-        rows = [{"Attribute": nd.get("attr_defs",{}).get(k,{}).get("display_name",k),
-                 "Value": str(v),
-                 "Section": nd.get("attr_defs",{}).get(k,{}).get("section","—")}
-                for k, v in nd["attributes"].items()]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    # Artifacts
-    if nd.get("artifacts"):
-        st.markdown('<div class="sec-hdr">Artifacts</div>', unsafe_allow_html=True)
-        st.markdown("".join(f'<span class="art-pill">📄 {a}</span>' for a in nd["artifacts"]),
-                    unsafe_allow_html=True)
-
-    # Activity
-    if nd.get("activity"):
-        st.markdown('<div class="sec-hdr">Recent activity</div>', unsafe_allow_html=True)
-        for act in nd["activity"]:
-            st.markdown(f'<div class="act-item"><div class="act-dot"></div>'
-                        f'<div><div class="act-text">{act["text"]}</div>'
-                        f'<div class="act-time">{act["time"]}</div></div></div>',
-                        unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown(f"""
-    <div style="padding:4px 0 16px">
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="width:36px;height:36px;background:linear-gradient(135deg,{BRAND['teal']},{BRAND['orange']});
-                    border-radius:9px;display:flex;align-items:center;justify-content:center">
-          <span style="color:white;font-size:18px;font-weight:900">⬡</span>
-        </div>
-        <div>
-          <div style="font-size:15px;font-weight:800;color:white;letter-spacing:-.01em">MRM Vault</div>
-          <div style="font-size:10px;color:#7FA3CC">Solytics Partners</div>
-        </div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("---")
-
-    q = st.text_input("🔍 Search entities", placeholder="model, dataset…", label_visibility="collapsed")
-    if q:
-        matches = [(nid, n) for nid, n in NODES.items() if q.lower() in n["name"].lower()]
-        for nid, n in matches[:6]:
-            if st.button(n["name"], key=f"s_{nid}"):
-                navigate_to(nid)
-        if not matches:
-            st.caption("No results")
-
-    st.markdown("### Display")
-    st.session_state.show_entities  = st.checkbox("Show entities",  value=st.session_state.show_entities)
-    st.session_state.show_workflows = st.checkbox("Show workflows", value=st.session_state.show_workflows)
-
-    st.markdown("### Depth")
-    dm = {"1 hop":1,"2 hops":2,"All":999}
-    dl = st.radio("d", list(dm.keys()), horizontal=True, label_visibility="collapsed")
-    st.session_state.depth = dm[dl]
-
-    st.markdown("### Category")
-    st.session_state.cat_filter = st.selectbox("c", ["All","Lineage","Governance","Validation","Monitoring","Lifecycle","Issue","Output"], label_visibility="collapsed")
-
-    st.markdown("### Quick access")
-    for qa in QUICK_ACCESS:
-        if st.button(qa["label"], key=f"qa_{qa['id']}"):
-            navigate_to(qa["id"])
-
-    st.markdown("---")
-    if st.button("↺ Reset view"):
-        st.session_state.selected_id = "credit_risk_model"
-        st.session_state.depth = 1
-        st.session_state.history = ["credit_risk_model"]
-        st.rerun()
-
-    st.markdown(f"""
-    <div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:4px">
-      <span style="font-size:9px;padding:2px 7px;background:rgba(255,255,255,0.08);
-             border:1px solid rgba(255,255,255,0.12);border-radius:3px;color:#7FA3CC">RegTech100 2026</span>
-      <span style="font-size:9px;padding:2px 7px;background:rgba(255,255,255,0.08);
-             border:1px solid rgba(255,255,255,0.12);border-radius:3px;color:#7FA3CC">Chartis #45</span>
-      <span style="font-size:9px;padding:2px 7px;background:rgba(255,255,255,0.08);
-             border:1px solid rgba(255,255,255,0.12);border-radius:3px;color:#7FA3CC">SR 11-7</span>
-    </div>""", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN — compute state
-# ─────────────────────────────────────────────────────────────────────────────
-sel_id   = st.session_state.selected_id
-sel_nd   = NODES.get(sel_id, {})
-depth    = st.session_state.depth
-
-vis_ids = get_visible_ids(sel_id, depth)
-if not st.session_state.show_entities:
-    vis_ids = [i for i in vis_ids if NODES[i]["type"] != ENTITY or i == sel_id]
-if not st.session_state.show_workflows:
-    vis_ids = [i for i in vis_ids if NODES[i]["type"] != WORKFLOW or i == sel_id]
-if sel_id not in vis_ids:
-    vis_ids.insert(0, sel_id)
-
-vis_links = get_visible_links(vis_ids)
-impacted  = impact_trace(sel_id)
-score     = get_risk_score(sel_id)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HEADER
-# ─────────────────────────────────────────────────────────────────────────────
-st.markdown(f"""
-<div class="vault-header">
-  <div>
-    <div class="vault-wordmark">MRM <span>Vault</span></div>
-    <div class="vault-subtitle">Enterprise Model Risk Governance Explorer · Solytics Partners</div>
-  </div>
-  <div>
-    <span class="vault-badge">SR 11-7</span>
-    <span class="vault-badge teal">OSFI E-23</span>
-    <span class="vault-badge teal">PRA SS1/23</span>
-    <span class="vault-badge orange">EU AI Act</span>
-    <span class="vault-badge">RegTech100 2026</span>
-  </div>
-</div>""", unsafe_allow_html=True)
-
-# Breadcrumb
-hist = st.session_state.history
-if hist:
-    parts = []
-    for hi in hist[-6:]:
-        n_ = NODES.get(hi, {})
-        is_last = (hi == hist[-1])
-        cls = "bc-curr" if is_last else "bc-item"
-        parts.append(f'<span class="{cls}">{n_.get("name", hi)}</span>')
-    bc = ' <span class="bc-sep">›</span> '.join(parts)
-    st.markdown(f'<div class="breadcrumb">{bc}</div>', unsafe_allow_html=True)
-
-# KPI bar
-ent_cnt = sum(1 for i in vis_ids if NODES[i]["type"]==ENTITY)
-wf_cnt  = sum(1 for i in vis_ids if NODES[i]["type"]==WORKFLOW)
-sc_col  = BRAND["danger"] if score>=70 else BRAND["warning"] if score>=40 else BRAND["success"]
-
-st.markdown(f"""
-<div class="kpi-row">
-  <div class="kpi-card">
-    <div class="kpi-label">Selected entity</div>
-    <div class="kpi-value" style="font-size:13px;margin-top:2px">{sel_nd.get('name','—')}</div>
-    <div class="kpi-sub">{sel_nd.get('type','—')} · {sel_nd.get('subtype','—')}</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-label">Visible nodes</div>
-    <div class="kpi-value">{len(vis_ids)}</div>
-    <div class="kpi-sub">{ent_cnt} entities · {wf_cnt} workflows</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-label">Visible links</div>
-    <div class="kpi-value">{len(vis_links)}</div>
-    <div class="kpi-sub">Directed relationships</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-label">Downstream impact</div>
-    <div class="kpi-value">{len(impacted)}</div>
-    <div class="kpi-sub">Nodes affected by changes</div>
-  </div>
-  <div class="kpi-card" style="border-left-color:{sc_col}">
-    <div class="kpi-label">Risk score</div>
-    <div class="kpi-value" style="color:{sc_col}">{score}<span style="font-size:13px">/100</span></div>
-    <div class="kpi-sub">Upstream-weighted</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-label">Audit events</div>
-    <div class="kpi-value">{len(AUDIT_LOG)}</div>
-    <div class="kpi-sub">Field changes logged</div>
-  </div>
-  <div class="kpi-card">
-    <div class="kpi-label">API calls</div>
-    <div class="kpi-value">{len(API_LOG)}</div>
-    <div class="kpi-sub">Request log entries</div>
-  </div>
-</div>""", unsafe_allow_html=True)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# TABS
-# ─────────────────────────────────────────────────────────────────────────────
-(t_graph, t_canvas, t_entity, t_rel, t_workflow,
- t_perm, t_exec, t_version, t_audit, t_api) = st.tabs([
-    "🔷 Graph",
-    "🗺 Full Canvas",
-    "📦 Entity System",
-    "🔗 Relationships",
-    "⚙ Workflows",
-    "🔐 Permissions",
-    "⏱ Execution",
-    "🌳 Versions",
-    "📋 Audit",
-    "🌐 API",
-])
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — GRAPH
-# ══════════════════════════════════════════════════════════════════════════════
-with t_graph:
-    gc, dc = st.columns([2.3, 1], gap="large")
-    with gc:
-        st.markdown(f"**Relationship graph** "
-                    f"<span style='font-size:12px;color:{BRAND['muted']}'>"
-                    f"{'all' if depth==999 else depth}-hop · {sel_nd.get('name','')}</span>",
-                    unsafe_allow_html=True)
-        st.components.v1.html(render_svg(vis_ids, sel_id, st.session_state.cat_filter), height=580)
-
-        all_nav = list(dict.fromkeys(
-            [l["target"] for l in get_outgoing(sel_id)] +
-            [l["source"] for l in get_incoming(sel_id)]
-        ))
-        if all_nav:
-            st.markdown("**Navigate to connected node:**")
-            cols = st.columns(min(len(all_nav), 5))
-            for i, nid in enumerate(all_nav[:10]):
-                n2 = NODES.get(nid,{})
-                with cols[i%5]:
-                    if st.button(n2.get("name",nid)[:18], key=f"nav_{sel_id}_{nid}",
-                                 help=f"{n2.get('type')} · {n2.get('subtype')}"):
-                        navigate_to(nid)
-
-        st.markdown("---")
-        st.markdown("**Visible relationship table**")
-        if vis_links:
-            rows = []
-            for lk in vis_links:
-                src = NODES.get(lk["source"],{})
-                tgt = NODES.get(lk["target"],{})
-                rt  = REL_TYPES.get(lk["relType"],{})
-                rows.append({"Source": src.get("name",""), "Relationship": rt.get("label",""),
-                             "Target": tgt.get("name",""), "Cardinality": lk.get("cardinality",""),
-                             "Category": rt.get("category",""), "Directed": "→" if rt.get("directed",True) else "↔"})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-        with st.expander("📝 Relationship notes"):
-            for lk in vis_links:
-                sn = NODES.get(lk["source"],{}).get("name","")
-                tn = NODES.get(lk["target"],{}).get("name","")
-                rt = REL_TYPES.get(lk["relType"],{})
-                cat = rt.get("category","default")
-                c = CAT_CLR.get(cat, CAT_CLR["default"])
-                st.markdown(f'<span class="cat-pill" style="background:{c["bg"]};color:{c["text"]}">{cat}</span> '
-                            f'**{sn}** → [{rt.get("label","")}] → **{tn}** `{lk.get("cardinality","")}`',
-                            unsafe_allow_html=True)
-                st.caption(lk.get("notes",""))
-
-        buf = io.StringIO()
-        w = csv.DictWriter(buf, fieldnames=["Source","Relationship","Target","Cardinality","Category","Notes"])
-        w.writeheader()
-        for lk in vis_links:
-            w.writerow({"Source": NODES.get(lk["source"],{}).get("name",""),
-                        "Relationship": REL_TYPES.get(lk["relType"],{}).get("label",""),
-                        "Target": NODES.get(lk["target"],{}).get("name",""),
-                        "Cardinality": lk.get("cardinality",""),
-                        "Category": REL_TYPES.get(lk["relType"],{}).get("category",""),
-                        "Notes": lk.get("notes","")})
-        st.download_button("⬇ Export CSV", buf.getvalue().encode(),
-                           f"mrm_vault_{sel_id}.csv", "text/csv")
-
-    with dc:
-        st.markdown("**Entity detail**")
-        render_detail(sel_id)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — FULL CANVAS (single white-space interactive view)
-# ══════════════════════════════════════════════════════════════════════════════
-with t_canvas:
-    st.markdown("**Full System Canvas** — all entities, relationships, workflows, and permissions in one unified view")
-    st.caption("Select an entity below to explore. The canvas shows the complete system graph at full depth.")
-
-    # Entity selector row
-    all_node_ids = list(NODES.keys())
-    all_node_names = [NODES[n]["name"] for n in all_node_ids]
-    canvas_sel_name = st.selectbox(
-        "Select entity to explore:",
-        all_node_names,
-        index=all_node_ids.index(sel_id) if sel_id in all_node_ids else 0,
-        key="canvas_sel"
+def _chip(nid, label, is_wf=False):
+    bg  = "#EFF6FF" if not is_wf else "#F0FDFA"
+    col = NAVY if not is_wf else TEAL
+    bdr = "#BFDBFE" if not is_wf else "#99F6E4"
+    return html.Button(
+        [html.Span("WF " if is_wf else "E ", style={"fontSize":8,"fontWeight":800,"opacity":.65}),
+         html.Span(label, style={"fontWeight":600})],
+        id={"type":"chip","index":nid},
+        n_clicks=0,
+        style={
+            "background":bg,"border":f"1px solid {bdr}","color":col,
+            "borderRadius":8,"padding":"6px 12px","fontSize":12,
+            "cursor":"pointer","margin":"3px",
+            "fontFamily":"'DM Sans',sans-serif","transition":"all .12s",
+        }
     )
-    canvas_sel_id = all_node_ids[all_node_names.index(canvas_sel_name)]
 
-    # Full-depth graph
-    canvas_ids = get_visible_ids(canvas_sel_id, 999)
-    st.markdown(f"""
-    <div class="canvas-wrap">""", unsafe_allow_html=True)
-    st.components.v1.html(render_svg(canvas_ids, canvas_sel_id, "All"), height=620)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # Three-column details
-    col_a, col_b, col_c = st.columns(3, gap="large")
-
-    with col_a:
-        st.markdown("**Entity details**")
-        nd = NODES.get(canvas_sel_id, {})
-        is_e = nd.get("type") == ENTITY
-        r_col = BRAND["danger"] if score>=70 else BRAND["warning"] if score>=40 else BRAND["success"]
-        s_col, _ = get_status_color(nd.get("status",""))
-        st.markdown(f"""
-        <div style="background:white;border:1px solid {BRAND['border']};border-radius:10px;padding:14px">
-          <div style="font-size:15px;font-weight:800;color:{BRAND['navy']};margin-bottom:6px">{nd.get('name','')}</div>
-          <div style="font-size:11px;color:{BRAND['muted']};margin-bottom:10px">{nd.get('summary','')[:200]}…</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-            <div><div style="font-size:9px;font-weight:700;color:{BRAND['muted']};text-transform:uppercase">Owner</div>
-                 <div style="font-size:12px;font-weight:600">{nd.get('owner','—')}</div></div>
-            <div><div style="font-size:9px;font-weight:700;color:{BRAND['muted']};text-transform:uppercase">Status</div>
-                 <div style="font-size:12px;font-weight:600;color:{s_col}">{nd.get('status','—')}</div></div>
-            <div><div style="font-size:9px;font-weight:700;color:{BRAND['muted']};text-transform:uppercase">{"Risk" if is_e else "Stage"}</div>
-                 <div style="font-size:12px;font-weight:600">{nd.get('risk','—') if is_e else nd.get('stage','—')}</div></div>
-            <div><div style="font-size:9px;font-weight:700;color:{BRAND['muted']};text-transform:uppercase">Risk Score</div>
-                 <div style="font-size:13px;font-weight:800;color:{r_col}">{get_risk_score(canvas_sel_id)}/100</div></div>
-          </div>
-        </div>""", unsafe_allow_html=True)
-
-        if nd.get("stages"):
-            st.markdown("**Lifecycle stages**")
-            for s in nd["stages"]:
-                if s["status"]=="done":    ico,cls="✓","s-done"
-                elif s["status"]=="current": ico,cls="●","s-cur"
-                else:                        ico,cls="○","s-pend"
-                st.markdown(f'<div class="stage-item"><span>{ico}</span><span class="{cls}">{s["name"]}</span></div>',
-                            unsafe_allow_html=True)
-            ci = next((i for i,s in enumerate(nd["stages"]) if s["status"]=="current"), -1)
-            if 0 <= ci < len(nd["stages"])-1:
-                if st.button("⏭ Advance stage", key=f"canvas_adv_{canvas_sel_id}", type="primary"):
-                    r = advance_stage(canvas_sel_id)
-                    st.success(r["new_stage"]) if r["ok"] else st.error(r["message"])
-                    if r["ok"]: st.rerun()
-
-    with col_b:
-        st.markdown("**Relationships**")
-        out = get_outgoing(canvas_sel_id)
-        inc = get_incoming(canvas_sel_id)
-        for lk in out:
-            n2 = NODES.get(lk["target"],{})
-            rt = REL_TYPES.get(lk["relType"],{})
-            cat = rt.get("category","default")
-            c = CAT_CLR.get(cat, CAT_CLR["default"])
-            st.markdown(f'<div class="rel-row">'
-                        f'<span class="rel-icon-e">E</span>'
-                        f'<span style="flex:1;font-size:12px">{n2.get("name","")}</span>'
-                        f'<span class="cat-pill" style="background:{c["bg"]};color:{c["text"]}">{rt.get("label","")}</span>'
-                        f'<span style="font-size:9px;color:{BRAND["muted"]}">{lk.get("cardinality","")}</span>'
-                        f'</div>', unsafe_allow_html=True)
-        for lk in inc:
-            n2 = NODES.get(lk["source"],{})
-            rt = REL_TYPES.get(lk["relType"],{})
-            cat = rt.get("category","default")
-            c = CAT_CLR.get(cat, CAT_CLR["default"])
-            st.markdown(f'<div class="rel-row">'
-                        f'<span class="rel-icon-w">WF</span>'
-                        f'<span style="flex:1;font-size:12px">{n2.get("name","")}</span>'
-                        f'<span class="cat-pill" style="background:{c["bg"]};color:{c["text"]}">← {rt.get("label","")}</span>'
-                        f'<span style="font-size:9px;color:{BRAND["muted"]}">{lk.get("cardinality","")}</span>'
-                        f'</div>', unsafe_allow_html=True)
-
-        # Navigate from canvas
-        st.markdown("**Navigate:**")
-        all_connected = list(dict.fromkeys(
-            [l["target"] for l in out] + [l["source"] for l in inc]
-        ))
-        for nid in all_connected:
-            n2 = NODES.get(nid,{})
-            if st.button(f"→ {n2.get('name','')[:24]}", key=f"cv_{canvas_sel_id}_{nid}"):
-                navigate_to(nid)
-                st.session_state.canvas_sel = n2.get("name","")
-
-    with col_c:
-        st.markdown("**Section permissions**")
-        nd_entity_type = "Model" if nd.get("subtype") in [
-            "Statistical Model","ML Model","AI/GenAI Model","Vendor Model"] else \
-            "Dataset" if nd.get("subtype")=="Dataset" else \
-            "Validation" if nd.get("subtype") in ["Validation"] else "Model"
-        perm_rows = [r for r in MASTER_PERMISSION_TABLE if r["entity"] == nd_entity_type]
-        if perm_rows:
-            current_stage = nd.get("stage") or nd.get("workflow_state","—")
-            for r in perm_rows[:6]:
-                sec_t = SECTION_TYPE_REGISTRY.get(r["section"],{}).get("type","dynamic")
-                tc = {"static":"pill-static","dynamic":"pill-dynamic","system":"pill-system"}.get(sec_t,"pill-dynamic")
-                st.markdown(f"""
-                <div class="spc">
-                  <h4>📁 {r['section']} <span class="pill {tc}">{sec_t}</span></h4>
-                  <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
-                    <span class="pill pill-{r['analyst']}">A: {r['analyst']}</span>
-                    <span class="pill pill-{r['validator']}">V: {r['validator']}</span>
-                    <span class="pill pill-{r['approver']}">Ap: {r['approver']}</span>
-                    <span style="font-size:10px;color:{BRAND['muted']}">{r['stage']}</span>
-                  </div>
-                </div>""", unsafe_allow_html=True)
-
-        st.markdown("**Attributes**")
-        if nd.get("attributes"):
-            for k, v in list(nd["attributes"].items())[:6]:
-                ad = nd.get("attr_defs",{}).get(k,{})
-                st.markdown(f'<div style="font-size:11px;padding:3px 0;border-bottom:1px solid {BRAND["border"]}">'
-                            f'<span style="color:{BRAND["muted"]}">{ad.get("display_name",k)}</span>: '
-                            f'<span style="font-weight:600">{v}</span></div>', unsafe_allow_html=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — ENTITY SYSTEM
-# ══════════════════════════════════════════════════════════════════════════════
-with t_entity:
-    st.markdown("**Master Entity Table** — all entity types (Business + Process)")
-    st.caption("From KT sessions: Assessment → creates Model → creates Subprocesses (Validation, Monitoring, etc.) → creates Findings. Use Case links to multiple Models. Query tracks justification queries.")
-
-    et_df = pd.DataFrame(MASTER_ENTITY_TABLE)
-    st.dataframe(et_df, use_container_width=True, hide_index=True,
-                 column_config={
-                     "entity_type": st.column_config.TextColumn("Entity Type", width="medium"),
-                     "category": st.column_config.TextColumn("Category", width="small"),
-                     "id_prefix": st.column_config.TextColumn("ID Prefix", width="small"),
-                     "description": st.column_config.TextColumn("Description", width="large"),
-                 })
-
-    st.markdown("---")
-    st.markdown("**Entity Sub-Template Explorer** — click entity type to view its template sections and permissions")
-    st.caption("Multi-select supported. Each entity type is a projection of the master template — Preliminary (top) + Descriptive sections (below).")
-
-    all_et = [e["entity_type"] for e in MASTER_ENTITY_TABLE]
-    # Use widget key directly tied to session state
-    sel_entities = st.multiselect(
-        "Select entity type(s) to view sub-templates:",
-        all_et,
-        default=st.session_state.multi_entity_sel,
-        key="multi_entity_sel_widget"
+def _tbl(**kw):
+    return dict(
+        style_table={"overflowX":"auto"},
+        style_header={"background":BG,"fontWeight":700,"fontSize":10,"color":MUTED,
+                       "textTransform":"uppercase","border":f"1px solid {BORDER}",
+                       "borderBottom":f"2px solid {BORDER}"},
+        style_cell={"fontSize":12,"padding":"7px 10px","border":f"1px solid {BORDER}",
+                     "fontFamily":"'DM Sans',sans-serif","color":TEXT,
+                     "whiteSpace":"normal","textAlign":"left"},
+        **kw,
     )
-    # Sync
-    st.session_state.multi_entity_sel = sel_entities
 
-    if sel_entities:
-        sub_tabs = st.tabs(sel_entities)
-        for tab_obj, etype in zip(sub_tabs, sel_entities):
-            with tab_obj:
-                prows = [r for r in MASTER_PERMISSION_TABLE if r["entity"] == etype]
+# ═══════════════════════════════════════════════════════════════════════════════
+# LAYOUT
+# ═══════════════════════════════════════════════════════════════════════════════
+app = dash.Dash(__name__, suppress_callback_exceptions=True,
+                title="MRM Vault | Solytics Partners",
+                meta_tags=[{"name":"viewport","content":"width=device-width,initial-scale=1"}])
+server = app.server
 
-                # Template config
-                if etype in TEMPLATE_CONFIGS:
-                    tmpl = TEMPLATE_CONFIGS[etype]
-                    ca, cb = st.columns(2, gap="large")
-                    with ca:
-                        st.markdown(f"**Template: {etype}** — `{tmpl['id_prefix']}-XXX`")
-                        st.markdown(f"*{tmpl['description']}*")
-                        st.markdown(f"**Default workflow:** {tmpl['workflow']}")
-                        st.markdown("**Preliminary attributes** (top of entity page):")
-                        st.code(", ".join(tmpl["preliminary_attrs"]))
-                    with cb:
-                        st.markdown("**Descriptive sections:**")
-                        for sn, attrs in tmpl["sections"].items():
-                            st.markdown(f"*{sn}* → `{', '.join(attrs)}`")
-                        if tmpl.get("conditional_sections"):
-                            st.markdown("**Conditional sections:**")
-                            for sn, cond in tmpl["conditional_sections"].items():
-                                st.markdown(f"- **{sn}** shown when: `{cond}`")
+FONTS = ("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;"
+         "0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800&family=DM+Mono:wght@400;500&"
+         "family=Plus+Jakarta+Sans:wght@700;800&display=swap")
 
-                st.markdown("---")
+app.layout = html.Div([
+    html.Link(rel="stylesheet", href=FONTS),
+    dcc.Store(id="sel",       data="credit_risk_model"),
+    dcc.Store(id="ptab",      data="overview"),
+    dcc.Store(id="dv-active", data=""),
 
-                if prows:
-                    st.markdown(f"**Section-wise permissions for {etype}**")
-                    sections_seen = []
-                    for r in prows:
-                        if r["section"] not in sections_seen:
-                            sections_seen.append(r["section"])
+    html.Div([
 
-                    for sec in sections_seen:
-                        sec_type_info = SECTION_TYPE_REGISTRY.get(sec, {})
-                        sec_t = sec_type_info.get("type","dynamic")
-                        tc = {"static":"pill-static","dynamic":"pill-dynamic","system":"pill-system"}.get(sec_t,"pill-dynamic")
-                        st.markdown(f"""
-                        <div class="spc">
-                          <h4>📁 {sec} <span class="pill {tc}">{sec_t}</span></h4>
-                          <div style="font-size:11px;color:{BRAND['muted']};margin-bottom:6px">{sec_type_info.get('description','')}</div>
-                        </div>""", unsafe_allow_html=True)
+        # ══════════════════════════════════════════════════════════════════
+        # SIDEBAR
+        # ══════════════════════════════════════════════════════════════════
+        html.Div([
+            # Logo
+            html.Div([
+                html.Div("⬡", style={"fontSize":22,"color":WHITE}),
+                html.Div([
+                    html.Div("MRM Vault", style={"fontSize":14,"fontWeight":800,"color":WHITE,
+                                                  "fontFamily":"'Plus Jakarta Sans',sans-serif"}),
+                    html.Div("Solytics Partners", style={"fontSize":9.5,"color":"#7FA3CC"}),
+                ]),
+            ], style={"display":"flex","alignItems":"center","gap":9,
+                      "padding":"16px 14px 12px","borderBottom":"1px solid rgba(255,255,255,0.08)"}),
 
-                        sec_perms = [r for r in prows if r["section"] == sec]
-                        perm_rows = [{"Stage": r["stage"], "Analyst": r["analyst"],
-                                      "Validator": r["validator"], "Approver": r["approver"]}
-                                     for r in sec_perms]
-                        perm_df = pd.DataFrame(perm_rows)
+            # Search
+            html.Div([
+                dcc.Input(id="search-inp", placeholder="🔍  Search entities…", debounce=True,
+                          style={"width":"100%","background":"rgba(255,255,255,0.08)",
+                                 "border":"1px solid rgba(255,255,255,0.12)","borderRadius":7,
+                                 "padding":"7px 11px","color":WHITE,"fontSize":12,
+                                 "fontFamily":"'DM Sans',sans-serif","outline":"none",
+                                 "boxSizing":"border-box"}),
+                html.Div(id="search-res"),
+            ], style={"padding":"10px 12px"}),
 
-                        def cperm(val):
-                            if val=="M": return "background-color:#D1FAE5;color:#065F46;font-weight:800"
-                            if val=="V": return "background-color:#DBEAFE;color:#1E40AF"
-                            if val=="H": return "background-color:#F3F4F6;color:#9CA3AF"
-                            return ""
+            # Controls
+            html.Div([
+                html.Div("DEPTH", style={"fontSize":9,"fontWeight":700,"color":"#7FA3CC","letterSpacing":".1em","marginBottom":4}),
+                dcc.RadioItems(id="depth-r",
+                               options=[{"label":"1","value":1},{"label":"2","value":2},{"label":"All","value":999}],
+                               value=2, inline=True,
+                               inputStyle={"marginRight":3,"accentColor":TEAL},
+                               labelStyle={"color":"#C8D8EC","fontSize":12.5,"marginRight":10}),
+            ], style={"padding":"4px 14px 10px","borderBottom":"1px solid rgba(255,255,255,0.07)"}),
 
-                        styled = safe_map(perm_df.style, cperm, subset=["Analyst","Validator","Approver"])
-                        st.dataframe(styled, use_container_width=True, hide_index=True)
-                else:
-                    st.info(f"No permission data for {etype} in MASTER_PERMISSION_TABLE. Add rows in data_model.py.")
+            html.Div([
+                html.Div("CATEGORY", style={"fontSize":9,"fontWeight":700,"color":"#7FA3CC","letterSpacing":".1em","marginBottom":4}),
+                dcc.Dropdown(id="cat-dd",
+                             options=[{"label":c.title(),"value":c} for c in
+                                      ["All","lineage","governance","validation","monitoring","lifecycle","issue"]],
+                             value="All", clearable=False, style={"fontSize":12}),
+            ], style={"padding":"8px 12px 10px","borderBottom":"1px solid rgba(255,255,255,0.07)"}),
 
-                # Attribute library for this entity type
-                st.markdown("**Attribute library**")
-                etype_attrs = [a for a in ATTRIBUTE_LIBRARY
-                               if etype in a.get("entity_types",[]) or "All" in a.get("entity_types",[])]
-                if etype_attrs:
-                    attr_rows = [{"Field name": a["field_name"], "Display name": a["display_name"],
-                                  "Data type": a["data_type"], "Section": a["section"],
-                                  "Required": "✓" if a["required"] else "", "Example": a["example"]}
-                                 for a in etype_attrs]
-                    st.dataframe(pd.DataFrame(attr_rows), use_container_width=True, hide_index=True)
+            html.Div([
+                html.Div("LAYOUT", style={"fontSize":9,"fontWeight":700,"color":"#7FA3CC","letterSpacing":".1em","marginBottom":4}),
+                dcc.Dropdown(id="layout-dd",
+                             options=[{"label":l,"value":l} for l in
+                                      ["cose-bilkent","dagre","cola","concentric","grid"]],
+                             value="cose-bilkent", clearable=False, style={"fontSize":12}),
+            ], style={"padding":"8px 12px 10px","borderBottom":"1px solid rgba(255,255,255,0.07)"}),
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — RELATIONSHIPS
-# ══════════════════════════════════════════════════════════════════════════════
-with t_rel:
-    st.markdown("**Master Relationship Table** — all valid entity-to-entity connections")
+            # Quick access
+            html.Div([
+                html.Div("QUICK ACCESS", style={"fontSize":9,"fontWeight":700,"color":"#7FA3CC","letterSpacing":".1em","marginBottom":6}),
+                *[html.Button(qa["label"], id=f"qa-{qa['id']}", n_clicks=0,
+                              style={"width":"100%","textAlign":"left",
+                                     "background":"rgba(255,255,255,0.05)",
+                                     "border":"1px solid rgba(255,255,255,0.09)","borderRadius":6,
+                                     "color":"#C8D8EC","padding":"6px 10px","fontSize":11.5,
+                                     "cursor":"pointer","marginBottom":3,
+                                     "fontFamily":"'DM Sans',sans-serif"})
+                  for qa in QUICK_ACCESS],
+            ], style={"padding":"8px 12px"}),
 
-    # Subset pills
-    st.markdown("**Relationship subsets:**")
-    sub_cols = st.columns(len(RELATIONSHIP_SUBSETS))
-    for col_o, (subset, info) in zip(sub_cols, RELATIONSHIP_SUBSETS.items()):
-        with col_o:
-            st.markdown(f'<div style="background:{info["color"]};color:{info["text"]};padding:7px 10px;'
-                        f'border-radius:8px;font-size:11px;font-weight:700;margin-bottom:4px">{subset}</div>'
-                        f'<div style="font-size:10px;color:{BRAND["muted"]}">{info["description"]}</div>',
-                        unsafe_allow_html=True)
+            # Deep-dive nav
+            html.Div([
+                html.Div("DEEP DIVE", style={"fontSize":9,"fontWeight":700,"color":"#7FA3CC","letterSpacing":".1em","marginBottom":5}),
+                *[html.Button(lbl, id=f"dv-{tid}", n_clicks=0,
+                              style={"width":"100%","textAlign":"left","background":"transparent",
+                                     "border":"none","color":"#7FA3CC","padding":"5px 6px",
+                                     "fontSize":11.5,"cursor":"pointer","borderRadius":5,
+                                     "fontFamily":"'DM Sans',sans-serif"})
+                  for lbl, tid in [("📦 Entity System","entity"),("🔗 Relationships","rel"),
+                                    ("⚙ Workflows","workflow"),("🔐 Permissions","perm"),
+                                    ("⏱ Execution","exec"),("🌳 Versions","version"),
+                                    ("📋 Audit","audit"),("🌐 API Log","api")]],
+            ], style={"padding":"8px 12px","borderTop":"1px solid rgba(255,255,255,0.07)"}),
 
-    st.markdown("---")
-    subset_filter = st.selectbox("Filter by subset:", ["All"]+list(RELATIONSHIP_SUBSETS.keys()), key="subset_filter_widget")
-    st.session_state.subset_filter = subset_filter
+            html.Div([
+                html.Span("SR 11-7", style={"fontSize":8.5,"padding":"2px 6px","background":"rgba(255,255,255,0.07)","border":"1px solid rgba(255,255,255,0.1)","borderRadius":3,"color":"#7FA3CC","marginRight":3}),
+                html.Span("RegTech100", style={"fontSize":8.5,"padding":"2px 6px","background":"rgba(255,255,255,0.07)","border":"1px solid rgba(255,255,255,0.1)","borderRadius":3,"color":"#7FA3CC"}),
+            ], style={"padding":"10px 12px","marginTop":"auto"}),
 
-    frels = MASTER_RELATIONSHIP_TABLE if subset_filter=="All" else \
-            [r for r in MASTER_RELATIONSHIP_TABLE if r["subset"]==subset_filter]
+        ], style={"width":210,"flexShrink":0,"background":NAVY,"height":"100vh",
+                  "overflowY":"auto","display":"flex","flexDirection":"column",
+                  "position":"sticky","top":0}),
 
-    st.dataframe(pd.DataFrame(frels), use_container_width=True, hide_index=True,
-                 column_config={
-                     "rel_id": st.column_config.TextColumn("ID", width="small"),
-                     "from_entity": st.column_config.TextColumn("From", width="small"),
-                     "rel_type": st.column_config.TextColumn("Type", width="medium"),
-                     "to_entity": st.column_config.TextColumn("To", width="small"),
-                     "cardinality": st.column_config.TextColumn("Cardinality", width="small"),
-                     "category": st.column_config.TextColumn("Category", width="small"),
-                     "subset": st.column_config.TextColumn("Subset", width="small"),
-                     "description": st.column_config.TextColumn("Description", width="large"),
-                 })
+        # ══════════════════════════════════════════════════════════════════
+        # MAIN CONTENT
+        # ══════════════════════════════════════════════════════════════════
+        html.Div([
 
-    st.markdown("---")
-    # Cardinality guide
-    st.markdown("**Cardinality types**")
-    cc = st.columns(4)
-    cards = [("1:1","#DBEAFE","#1E40AF","One-to-One","e.g. Model → Validation Workflow"),
-             ("1:N","#FEF3C7","#92400E","One-to-Many","e.g. Workflow → Stages"),
-             ("N:1","#EDE9FE","#6D28D9","Many-to-One","e.g. Models → Dataset"),
-             ("N:M","#D1FAE5","#065F46","Many-to-Many","e.g. Model → Policy")]
-    for col_o,(card,bg,tc,name,ex) in zip(cc,cards):
-        with col_o:
-            st.markdown(f'<div style="background:{bg};color:{tc};padding:10px 12px;border-radius:8px;margin-bottom:4px">'
-                        f'<div style="font-size:18px;font-weight:800;font-family:JetBrains Mono,monospace">{card}</div>'
-                        f'<div style="font-size:12px;font-weight:600">{name}</div></div>'
-                        f'<div style="font-size:11px;color:{BRAND["muted"]}">{ex}</div>',
-                        unsafe_allow_html=True)
+            # Top bar
+            html.Div([
+                html.Div([
+                    html.Span("MRM ", style={"fontWeight":800,"color":NAVY,"fontSize":18,"fontFamily":"'Plus Jakarta Sans',sans-serif"}),
+                    html.Span("Vault", style={"fontWeight":800,"color":TEAL,"fontSize":18,"fontFamily":"'Plus Jakarta Sans',sans-serif"}),
+                    html.Span(" · Enterprise Model Risk Governance", style={"fontSize":12,"color":MUTED,"marginLeft":8}),
+                ]),
+                html.Div(id="kpi-strip"),
+            ], style={"display":"flex","justifyContent":"space-between","alignItems":"center",
+                      "padding":"10px 18px","background":SURFACE,
+                      "borderBottom":f"1px solid {BORDER}","flexWrap":"wrap","gap":8}),
 
-    st.markdown("---")
-    st.markdown("**Live relationship instances**")
-    all_live = get_visible_links(list(NODES.keys()))
-    live_rows = []
-    for lk in all_live:
+            # Deep-dive drawer
+            html.Div(id="dv-drawer",
+                     style={"display":"none","padding":"14px 18px","background":BG,
+                            "borderBottom":f"2px solid {BORDER}","maxHeight":"55vh","overflowY":"auto"}),
+
+            # ── COMMAND CENTRE: graph | detail panel ──────────────────────
+            html.Div([
+
+                # Graph column
+                html.Div([
+                    _card([
+                        html.Div([
+                            html.Div(id="graph-ttl", style={"fontSize":13,"fontWeight":700,"color":NAVY}),
+                            html.Div([
+                                html.Span("Drag · Scroll to zoom · ", style={"fontSize":10,"color":MUTED}),
+                                html.Span("Click node → inspect panel  →", style={"fontSize":10,"color":TEAL,"fontWeight":700}),
+                            ]),
+                        ], style={"marginBottom":10}),
+
+                        cyto.Cytoscape(
+                            id="cy",
+                            elements=build_elements("credit_risk_model"),
+                            stylesheet=CY_SS,
+                            layout={"name":"cose-bilkent","animate":True,"animationDuration":500,
+                                     "fit":True,"padding":40,"nodeRepulsion":9000,"idealEdgeLength":150},
+                            style={"width":"100%","height":490,"border":f"1px solid {BORDER}",
+                                   "borderRadius":8,"background":"#FAFBFD"},
+                            minZoom=0.25, maxZoom=3.5, responsive=True,
+                        ),
+
+                        # Legend
+                        html.Div([
+                            html.Div([
+                                html.Span(style={"display":"inline-block","width":12,"height":2,
+                                                  "background":info["line"],"borderRadius":1,
+                                                  "verticalAlign":"middle","marginRight":4}),
+                                html.Span(cat.title(), style={"fontSize":9.5,"color":info["txt"]}),
+                            ], style={"display":"inline-flex","alignItems":"center","marginRight":14})
+                            for cat, info in list(CAT_CLR.items())[:6]
+                        ], style={"marginTop":8,"display":"flex","flexWrap":"wrap"}),
+                    ], mb=10),
+
+                    # Relationship table
+                    _card([
+                        html.Div("All Relationships", style={"fontSize":12,"fontWeight":700,"color":NAVY,"marginBottom":8}),
+                        html.Div(id="rel-quick"),
+                    ]),
+                ], style={"flex":"1.55","minWidth":0}),
+
+                # ── DETAIL PANEL ──────────────────────────────────────────
+                html.Div([
+                    # Panel tab row
+                    html.Div([
+                        *[html.Button(lbl, id=f"ptab-{tid}", n_clicks=0,
+                                      style={"background":"transparent","border":"none",
+                                             "borderBottom":"2px solid transparent",
+                                             "color":MUTED,"fontSize":11.5,"fontWeight":600,
+                                             "padding":"6px 10px","cursor":"pointer",
+                                             "fontFamily":"'DM Sans',sans-serif",
+                                             "transition":"color .12s"})
+                          for lbl, tid in [("Overview","overview"),("Linked","linked"),
+                                            ("Permissions","perms"),("Attributes","attrs"),
+                                            ("Activity","activity")]],
+                    ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":10,"gap":2}),
+
+                    html.Div(id="panel",
+                             style={"height":"calc(100vh - 230px)","overflowY":"auto","paddingRight":2}),
+                ], style={
+                    "width":320,"flexShrink":0,"background":SURFACE,
+                    "border":f"1px solid {BORDER}","borderRadius":10,"padding":"10px 14px",
+                    "height":"calc(100vh - 120px)","position":"sticky","top":70,"overflowY":"auto",
+                }),
+
+            ], style={"display":"flex","gap":14,"padding":"14px 18px 0","alignItems":"flex-start"}),
+
+        ], style={"flex":1,"background":BG,"overflowY":"auto","minHeight":"100vh"}),
+
+    ], style={"display":"flex","fontFamily":"'DM Sans',system-ui,sans-serif","minHeight":"100vh"}),
+], style={"margin":0,"padding":0})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CALLBACKS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Quick access ──────────────────────────────────────────────────────────────
+@app.callback(Output("sel","data"),
+              [Input(f"qa-{qa['id']}","n_clicks") for qa in QUICK_ACCESS],
+              prevent_initial_call=True)
+def qa_sel(*_):
+    ctx = callback_context
+    if not ctx.triggered: return no_update
+    nid = ctx.triggered[0]["prop_id"].split(".")[0].replace("qa-","")
+    return nid if nid in NODES else no_update
+
+# ── Chip click → select ───────────────────────────────────────────────────────
+@app.callback(Output("sel","data",allow_duplicate=True),
+              Input({"type":"chip","index":ALL},"n_clicks"),
+              prevent_initial_call=True)
+def chip_sel(clicks):
+    ctx = callback_context
+    if not ctx.triggered: return no_update
+    try:
+        nid = _json.loads(ctx.triggered[0]["prop_id"].split(".")[0])["index"]
+        return nid if nid in NODES else no_update
+    except Exception:
+        return no_update
+
+# ── Cytoscape node click ──────────────────────────────────────────────────────
+@app.callback(Output("sel","data",allow_duplicate=True),
+              Input("cy","tapNodeData"), prevent_initial_call=True)
+def cy_click(data):
+    if data and data.get("id") in NODES: return data["id"]
+    return no_update
+
+# ── Search ────────────────────────────────────────────────────────────────────
+@app.callback(Output("search-res","children"), Input("search-inp","value"))
+def search(q):
+    if not q or len(q)<2: return []
+    m = [(nid,nd) for nid,nd in NODES.items() if q.lower() in nd["name"].lower()]
+    return [html.Button(nd["name"], id=f"qa-{nid}", n_clicks=0,
+                        style={"width":"100%","textAlign":"left","background":"rgba(255,255,255,0.06)",
+                               "border":"1px solid rgba(255,255,255,0.1)","borderRadius":5,
+                               "color":WHITE,"padding":"5px 9px","fontSize":11,"cursor":"pointer",
+                               "marginBottom":2,"fontFamily":"'DM Sans',sans-serif"})
+            for nid,nd in m[:5]]
+
+# ── Graph update ──────────────────────────────────────────────────────────────
+@app.callback(
+    [Output("cy","elements"),Output("cy","layout"),Output("graph-ttl","children")],
+    [Input("sel","data"),Input("depth-r","value"),Input("cat-dd","value"),Input("layout-dd","value")])
+def upd_graph(sel, depth, cat, layout):
+    nd  = NODES.get(sel,{})
+    vis = get_visible_ids(sel, depth or 2)
+    lnk = get_visible_links(vis)
+    ttl = html.Span([
+        html.Span(nd.get("name",""), style={"color":NAVY,"fontWeight":700}),
+        html.Span(f"  ·  {len(vis)} nodes · {len(lnk)} links",
+                  style={"color":MUTED,"fontWeight":400,"fontSize":12}),
+    ])
+    return (build_elements(sel, depth or 2, cat or "All"),
+            {"name":layout or "cose-bilkent","animate":True,"animationDuration":450,
+             "fit":True,"padding":40,"nodeRepulsion":9000,"idealEdgeLength":150},
+            ttl)
+
+# ── Panel tab switch ──────────────────────────────────────────────────────────
+@app.callback(Output("ptab","data"),
+              [Input(f"ptab-{t}","n_clicks") for t in ["overview","linked","perms","attrs","activity"]],
+              prevent_initial_call=True)
+def ptab_switch(*_):
+    ctx = callback_context
+    if not ctx.triggered: return no_update
+    return ctx.triggered[0]["prop_id"].split(".")[0].replace("ptab-","")
+
+# ── KPI strip ─────────────────────────────────────────────────────────────────
+@app.callback(Output("kpi-strip","children"), Input("sel","data"))
+def kpi_strip(sel):
+    nd  = NODES.get(sel,{})
+    sc  = get_risk_score(sel)
+    imp = impact_trace(sel)
+    out = get_outgoing(sel)
+    inc = get_incoming(sel)
+    sc_col = DANGER if sc>=70 else WARN if sc>=40 else SUCCESS
+    rsk = nd.get("risk","")
+    rc, rb = RISK_CLR.get(rsk,(MUTED,BG))
+    return html.Div([
+        html.Span(nd.get("name","")[:24], style={"fontSize":13,"fontWeight":700,"color":NAVY,"marginRight":8}),
+        _tag(f"🔗 {len(out)+len(inc)} links", "#EFF6FF", NAVY),
+        _tag(f"↓ {len(imp)} impacted", "#FFF7ED", ORANGE),
+        _tag(f"⚡ {sc}/100", "#F0FDF4" if sc<40 else "#FFFBEB" if sc<70 else "#FFF1F2", sc_col),
+        _tag(nd.get("status","—"), "#F0FDFA", TEAL),
+        _tag(rsk, rb, rc) if rsk else html.Span(),
+    ], style={"display":"flex","alignItems":"center","gap":4,"flexWrap":"wrap"})
+
+# ── Relationship quick table ───────────────────────────────────────────────────
+@app.callback(Output("rel-quick","children"), Input("sel","data"))
+def rel_quick(sel):
+    lnks = get_visible_links(get_visible_ids(sel, 999))
+    if not lnks:
+        return html.Div("No relationships.", style={"color":MUTED,"fontSize":12})
+    rows = []
+    for lk in lnks:
         src = NODES.get(lk["source"],{})
         tgt = NODES.get(lk["target"],{})
         rt  = REL_TYPES.get(lk["relType"],{})
-        live_rows.append({"Source":src.get("name",""), "Relationship":rt.get("label",""),
-                          "Category":rt.get("category",""), "Target":tgt.get("name",""),
-                          "Cardinality":lk.get("cardinality",""),
-                          "Directed":"→" if rt.get("directed",True) else "↔"})
-    st.dataframe(pd.DataFrame(live_rows), use_container_width=True, hide_index=True)
+        cat = rt.get("category","default")
+        c   = CAT_CLR.get(cat,CAT_CLR["default"])
+        rows.append(html.Div([
+            html.Span(src.get("name","")[:16], style={"fontSize":11.5,"fontWeight":600,"color":TEXT,"flex":1,"minWidth":0}),
+            html.Span(rt.get("label",""),
+                      style={"fontSize":9.5,"background":c["bg"],"color":c["txt"],
+                             "padding":"1px 7px","borderRadius":4,"fontWeight":600,
+                             "flexShrink":0,"margin":"0 6px"}),
+            html.Span(lk.get("cardinality",""),
+                      style={"fontSize":9,"color":MUTED,"fontFamily":"'DM Mono',monospace",
+                             "flexShrink":0,"marginRight":6}),
+            html.Span(tgt.get("name","")[:16],
+                      style={"fontSize":11.5,"fontWeight":600,"color":TEXT,"flex":1,"textAlign":"right","minWidth":0}),
+        ], style={"display":"flex","alignItems":"center","padding":"5px 0","borderBottom":f"1px solid {BG}"}))
+    return rows
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — WORKFLOWS
-# ══════════════════════════════════════════════════════════════════════════════
-with t_workflow:
-    st.markdown("**Workflow Entity System** — workflows, stages, and tasks as first-class process entities")
-    st.caption("From KT sessions: Workflow is the backbone. Templates act as organs inside the backbone. "
-               "Stages map to section permissions. Entity transition triggers automations.")
+# ── MAIN PANEL ────────────────────────────────────────────────────────────────
+@app.callback(Output("panel","children"), [Input("sel","data"),Input("ptab","data")])
+def panel(sel, tab):
+    nd = NODES.get(sel)
+    if not nd:
+        return html.Div("Click any node on the graph →",
+                         style={"color":MUTED,"fontSize":13,"padding":20})
 
-    wt1, wt2, wt3, wt4 = st.tabs(["📋 Workflow Table","🔢 Stage Table","✅ Task Table","⚡ Automation Rules"])
+    tab  = tab or "overview"
+    is_e = nd["type"] == ENTITY
+    sc   = get_risk_score(sel)
+    imp  = impact_trace(sel)
+    up_  = upstream_trace(sel)
+    out  = get_outgoing(sel)
+    inc  = get_incoming(sel)
 
-    with wt1:
-        st.dataframe(pd.DataFrame(WORKFLOW_ENTITY_TABLE), use_container_width=True, hide_index=True)
-        st.markdown("---")
-        st.markdown("**Live workflow instances with stage tracker**")
+    sc_col = DANGER if sc>=70 else WARN if sc>=40 else SUCCESS
+    sc_bg  = "#FFF1F2" if sc>=70 else "#FFFBEB" if sc>=40 else "#F0FDF4"
+    rsk    = nd.get("risk","")
+    rc, rb = RISK_CLR.get(rsk,(MUTED,BG))
+
+    # ── Fixed header ──────────────────────────────────────────────────────
+    hdr = html.Div([
+        html.Div([
+            _pill("Entity" if is_e else "Workflow",
+                  bg="#EFF6FF" if is_e else "#F0FDFA",
+                  col=NAVY if is_e else TEAL),
+            html.Span(nd["subtype"], style={"fontSize":10,"color":MUTED}),
+        ], style={"marginBottom":5}),
+        html.Div(nd["name"], style={"fontSize":15,"fontWeight":800,"color":NAVY,"marginBottom":6,
+                                     "fontFamily":"'Plus Jakarta Sans',sans-serif","lineHeight":1.2}),
+        html.Div([
+            html.Div([html.Div("OWNER",style={"fontSize":8.5,"fontWeight":700,"color":MUTED,"textTransform":"uppercase","letterSpacing":".07em"}),
+                      html.Div(nd["owner"],style={"fontSize":11,"fontWeight":600,"color":TEXT})],style={"flex":1}),
+            html.Div([html.Div("STATUS",style={"fontSize":8.5,"fontWeight":700,"color":MUTED,"textTransform":"uppercase","letterSpacing":".07em"}),
+                      html.Div(nd.get("status","—"),style={"fontSize":11,"fontWeight":700,"color":TEAL})],style={"flex":1}),
+            html.Div([html.Div("RISK" if is_e else "STAGE",style={"fontSize":8.5,"fontWeight":700,"color":MUTED,"textTransform":"uppercase","letterSpacing":".07em"}),
+                      html.Div(nd.get("risk","—") if is_e else (nd.get("stage") or "—"),
+                               style={"fontSize":11,"fontWeight":700,"color":rc if is_e else NAVY})],style={"flex":1}),
+        ], style={"display":"flex","gap":6,"marginBottom":6}),
+
+        # Score bar
+        html.Div([html.Div(style={"width":f"{sc}%","height":3,"background":sc_col,"borderRadius":2,"transition":"width .4s"})],
+                  style={"background":BORDER,"borderRadius":2,"height":3,"marginBottom":5}) if is_e else html.Div(),
+        html.Div([
+            html.Span(f"Risk score: {sc}/100",
+                      style={"background":sc_bg,"color":sc_col,"fontSize":10,"fontWeight":700,"padding":"2px 8px","borderRadius":4}),
+            html.Span(f"  ↓{len(imp)} downstream · ↑{len(up_)} upstream",
+                      style={"fontSize":10,"color":MUTED,"marginLeft":8}),
+        ]) if is_e else html.Div(),
+    ], style={"paddingBottom":10,"marginBottom":8,"borderBottom":f"1px solid {BORDER}"})
+
+    # ── TAB: OVERVIEW ─────────────────────────────────────────────────────
+    if tab == "overview":
+        body = []
+
+        if nd.get("summary"):
+            body.append(html.Div(
+                nd["summary"][:320]+"…" if len(nd.get("summary",""))>320 else nd["summary"],
+                style={"fontSize":11.5,"color":MUTED,"lineHeight":1.7,"background":BG,
+                       "borderRadius":8,"padding":"10px 12px","marginBottom":10}))
+
+        # Impact
+        if imp:
+            body.append(_sec(f"↓ Downstream impact — {len(imp)} nodes"))
+            body += [html.Div([
+                html.Span("↓ ",style={"color":SUCCESS,"fontWeight":700}),
+                html.Span(NODES.get(i,{}).get("name",i),style={"fontSize":11.5}),
+                html.Span(f" · {NODES.get(i,{}).get('type','')}",style={"fontSize":10,"color":MUTED}),
+            ], style={"padding":"4px 9px","background":"#F0FDF4","border":"1px solid #BBF7D0",
+                       "borderRadius":6,"marginBottom":3}) for i in imp[:5]]
+
+        # Upstream
+        if up_:
+            deg = [u for u in up_ if NODES.get(u,{}).get("status") in ("Under Review","Not Started")]
+            body.append(_sec(f"↑ Upstream dependencies — {len(up_)}"))
+            body += [html.Div([
+                html.Span("↑ ",style={"color":WARN if u in deg else ORANGE,"fontWeight":700}),
+                html.Span(NODES.get(u,{}).get("name",u),style={"fontSize":11.5}),
+                html.Span(" ⚠",style={"fontSize":9,"color":DANGER,"fontWeight":700}) if u in deg else html.Span(),
+            ], style={"padding":"4px 9px",
+                       "background":"#FFFBEB" if u in deg else "#FFF7ED",
+                       "border":f"1px solid {'#FCA5A5' if u in deg else '#FED7AA'}",
+                       "borderRadius":6,"marginBottom":3}) for u in up_[:5]]
+
+        # Stages
+        if nd.get("stages"):
+            body.append(_sec("Lifecycle stages"))
+            ci = next((i for i,s in enumerate(nd["stages"]) if s["status"]=="current"),-1)
+            for s in nd["stages"]:
+                ic  = "✓" if s["status"]=="done" else "●" if s["status"]=="current" else "○"
+                col = SUCCESS if s["status"]=="done" else TEAL if s["status"]=="current" else MUTED
+                body.append(html.Div([
+                    html.Span(ic,style={"color":col,"marginRight":7,"fontSize":11,"fontWeight":700}),
+                    html.Span(s["name"],style={"color":col,"fontSize":11.5,
+                                                "fontWeight":700 if s["status"]=="current" else 500}),
+                    html.Span(" ← now" if s["status"]=="current" else "",
+                              style={"fontSize":9.5,"color":TEAL,"marginLeft":5,"fontWeight":700}),
+                ], style={"padding":"5px 0","borderBottom":f"1px solid {BG}",
+                           "display":"flex","alignItems":"center"}))
+            if 0<=ci<len(nd["stages"])-1:
+                body.append(html.Button("⏭  Advance Stage", id="adv-btn", n_clicks=0,
+                                        style={"marginTop":10,"background":TEAL,"color":WHITE,
+                                               "border":"none","borderRadius":7,"padding":"7px 14px",
+                                               "fontSize":12,"fontWeight":700,"cursor":"pointer",
+                                               "width":"100%","fontFamily":"'DM Sans',sans-serif"}))
+                body.append(html.Div(id="adv-msg"))
+
+    # ── TAB: LINKED ───────────────────────────────────────────────────────
+    elif tab == "linked":
+        body = []
+
+        ent_out = [(lk, NODES.get(lk["target"],{})) for lk in out
+                   if NODES.get(lk["target"],{}).get("type")==ENTITY]
+        ent_in  = [(lk, NODES.get(lk["source"],{})) for lk in inc
+                   if NODES.get(lk["source"],{}).get("type")==ENTITY]
+        wf_out  = [(lk, NODES.get(lk["target"],{})) for lk in out
+                   if NODES.get(lk["target"],{}).get("type")==WORKFLOW]
+        wf_in   = [(lk, NODES.get(lk["source"],{})) for lk in inc
+                   if NODES.get(lk["source"],{}).get("type")==WORKFLOW]
+
+        all_ent = ent_out + ent_in
+        all_wf  = wf_out + wf_in
+
+        if all_ent:
+            body.append(_sec(f"Linked Entities ({len(all_ent)})"))
+            for lk, n2 in all_ent:
+                rt  = REL_TYPES.get(lk["relType"],{})
+                cat = rt.get("category","default")
+                c   = CAT_CLR.get(cat,CAT_CLR["default"])
+                nid2= lk["target"] if lk.get("target") in NODES else lk["source"]
+                body.append(html.Div([
+                    html.Div([
+                        _chip(nid2, n2.get("name",""), is_wf=False),
+                    ]),
+                    html.Div([
+                        html.Span(rt.get("label",""),
+                                  style={"fontSize":9.5,"background":c["bg"],"color":c["txt"],
+                                         "padding":"1px 6px","borderRadius":4,"fontWeight":600,
+                                         "marginRight":6,"marginLeft":4}),
+                        html.Span(lk.get("cardinality",""),
+                                  style={"fontSize":9.5,"color":MUTED,"fontFamily":"'DM Mono',monospace"}),
+                    ], style={"marginTop":2}),
+                    html.Div(lk.get("notes","")[:110]+"…" if lk.get("notes","") else "",
+                             style={"fontSize":10.5,"color":MUTED,"marginTop":3,"lineHeight":1.5,"marginLeft":4}),
+                ], style={"background":BG,"borderRadius":8,"padding":"8px 10px","marginBottom":7}))
+
+        if all_wf:
+            body.append(_sec(f"Linked Workflows ({len(all_wf)})"))
+            for lk, n2 in all_wf:
+                nid2 = lk["target"] if lk.get("target") in NODES else lk["source"]
+                wnd  = NODES.get(nid2,{})
+                stgs = wnd.get("stages",[])
+                ci   = next((i for i,s in enumerate(stgs) if s["status"]=="current"),-1)
+                pct  = int((ci/max(len(stgs)-1,1))*100) if ci>=0 else 0
+                body.append(html.Div([
+                    _chip(nid2, n2.get("name",""), is_wf=True),
+                    html.Div([
+                        html.Span(wnd.get("stage","—") or "—",
+                                  style={"fontSize":11,"color":TEAL,"fontWeight":600}),
+                        html.Span(f" · {wnd.get('status','—')}",
+                                  style={"fontSize":10.5,"color":MUTED}),
+                    ], style={"marginTop":3,"marginLeft":4}),
+                    html.Div([html.Div(style={"width":f"{pct}%","height":3,"background":TEAL,"borderRadius":2})],
+                              style={"background":BORDER,"borderRadius":2,"height":3,"marginTop":5,"marginLeft":4}),
+                    html.Div(f"{pct}% complete",
+                              style={"fontSize":9.5,"color":MUTED,"marginTop":2,"marginLeft":4}),
+                ], style={"background":"#F0FDFA","border":"1px solid #99F6E4",
+                           "borderRadius":8,"padding":"8px 10px","marginBottom":7}))
+
+        if not all_ent and not all_wf:
+            body = [html.Div("No linked entities or workflows for this node.",
+                              style={"color":MUTED,"fontSize":12})]
+
+    # ── TAB: PERMISSIONS ──────────────────────────────────────────────────
+    elif tab == "perms":
+        et_map = {
+            "Statistical Model":"Model","ML Model":"Model","AI/GenAI Model":"Model","Vendor Model":"Model",
+            "Dataset":"Dataset","Validation":"Validation","Policy Document":"Policy",
+        }
+        etype = et_map.get(nd.get("subtype",""), "Model")
+        prows = [r for r in MASTER_PERMISSION_TABLE if r["entity"]==etype]
+        cur   = nd.get("stage") or nd.get("workflow_state") or "Registration"
+        body  = [
+            html.Div(f"Entity type: {etype}",style={"fontSize":11,"color":MUTED,"marginBottom":6}),
+            html.Span(f"Current stage: {cur}",
+                      style={"fontSize":11,"fontWeight":700,"color":TEAL,"padding":"3px 9px",
+                             "background":"#F0FDFA","borderRadius":5,"display":"inline-block","marginBottom":10}),
+        ]
+        secs_seen = []
+        for r in prows:
+            if r["section"] not in secs_seen: secs_seen.append(r["section"])
+        for sec in secs_seen:
+            st_   = SECTION_TYPE_REGISTRY.get(sec,{}).get("type","dynamic")
+            stbg, stcl = STYPE_CLR.get(st_,("#F1F5F9","#374151"))
+            sp = [r for r in prows if r["section"]==sec]
+            body.append(html.Div([
+                html.Div([
+                    html.Span(f"📁 {sec}",style={"fontSize":12,"fontWeight":700,"color":NAVY}),
+                    html.Span(st_,style={"fontSize":9,"fontWeight":700,"padding":"2px 7px","borderRadius":12,
+                                          "background":stbg,"color":stcl,"marginLeft":6,
+                                          "textTransform":"uppercase","letterSpacing":".05em"}),
+                ], style={"marginBottom":6}),
+                *[html.Div([
+                    html.Span(r["stage"][:18],style={"fontSize":10.5,"color":TEXT,"flex":1}),
+                    *[html.Span(lbl,style={"fontSize":10,"fontWeight":800 if r[role]=="M" else 600,
+                                            "padding":"2px 7px","borderRadius":5,"marginLeft":3,
+                                            "background":PERM_CLR.get(r[role],PERM_CLR["H"])[0],
+                                            "color":PERM_CLR.get(r[role],PERM_CLR["H"])[1]})
+                      for role, lbl in [("analyst","A"),("validator","V"),("approver","Ap")]],
+                    html.Span("← NOW",style={"fontSize":9,"color":TEAL,"marginLeft":4,"fontWeight":700})
+                    if (r["stage"].lower() in cur.lower() or cur.lower() in r["stage"].lower()) else html.Span(),
+                ], style={"display":"flex","alignItems":"center","padding":"3px 0",
+                           "borderBottom":f"1px solid {BG}",
+                           "background":"#F0FDFA" if (r["stage"].lower() in cur.lower() or cur.lower() in r["stage"].lower()) else "transparent"})
+                  for r in sp],
+            ], style={"background":BG,"borderRadius":8,"padding":"9px 10px","marginBottom":8}))
+
+    # ── TAB: ATTRIBUTES ───────────────────────────────────────────────────
+    elif tab == "attrs":
+        body = []
+        if nd.get("attributes"):
+            sgroups: dict = {}
+            for k, v in nd["attributes"].items():
+                ad  = nd.get("attr_defs",{}).get(k,{})
+                sec = ad.get("section","General")
+                sgroups.setdefault(sec,[]).append((k,v,ad))
+            for sec, attrs in sgroups.items():
+                body.append(_sec(sec))
+                for k, v, ad in attrs:
+                    body.append(html.Div([
+                        html.Div(ad.get("display_name",k),
+                                 style={"fontSize":10,"fontWeight":600,"color":MUTED,"marginBottom":1}),
+                        html.Div(str(v),style={"fontSize":12.5,"fontWeight":600,"color":TEXT}),
+                    ], style={"padding":"6px 0","borderBottom":f"1px solid {BG}"}))
+        sc = get_risk_score(sel)
+        body.append(_sec("Derived"))
+        body.append(html.Div([
+            html.Div("Risk Score",style={"fontSize":10,"fontWeight":600,"color":MUTED,"marginBottom":1}),
+            html.Div(f"{sc} / 100",style={"fontSize":14,"fontWeight":800,
+                                           "color":DANGER if sc>=70 else WARN if sc>=40 else SUCCESS}),
+            html.Div("base + upstream×3 + status + degraded×8",
+                     style={"fontSize":10,"color":MUTED,"marginTop":2}),
+        ], style={"padding":"6px 0","borderBottom":f"1px solid {BG}"}))
+        if nd.get("artifacts"):
+            body.append(_sec("Artifacts"))
+            body += [html.Div([html.Span("📄 ",style={"marginRight":4}),
+                               html.Span(a,style={"fontSize":11.5,"color":TEXT})],
+                               style={"padding":"4px 0","borderBottom":f"1px solid {BG}"})
+                     for a in nd["artifacts"]]
+
+    # ── TAB: ACTIVITY ─────────────────────────────────────────────────────
+    elif tab == "activity":
+        body = []
+        if nd.get("activity"):
+            body.append(_sec("Recent activity"))
+            for act in nd["activity"]:
+                body.append(html.Div([
+                    html.Div(style={"width":6,"height":6,"borderRadius":"50%","background":TEAL,
+                                    "marginTop":5,"flexShrink":0}),
+                    html.Div([
+                        html.Div(act["text"],style={"fontSize":11.5,"color":TEXT,"lineHeight":1.5}),
+                        html.Div(act["time"],style={"fontSize":10,"color":MUTED}),
+                    ]),
+                ], style={"display":"flex","gap":8,"padding":"5px 0","borderBottom":f"1px solid {BG}"}))
+
+        aud = [a for a in AUDIT_LOG if a["entity_id"]==sel]
+        if aud:
+            body.append(_sec(f"Audit — {len(aud)} changes"))
+            for a in aud[:8]:
+                body.append(html.Div([
+                    html.Div([
+                        html.Span(a["field"],style={"fontSize":10,"fontFamily":"'DM Mono',monospace",
+                                                     "background":BG,"padding":"1px 6px","borderRadius":4}),
+                        html.Span(f" by {a['changed_by']}",style={"fontSize":10,"color":MUTED,"marginLeft":5}),
+                        html.Span(a["timestamp"][:10],style={"fontSize":9.5,"color":MUTED,"marginLeft":5,
+                                                               "fontFamily":"'DM Mono',monospace"}),
+                    ], style={"marginBottom":3}),
+                    html.Div([
+                        html.Span(str(a["old_value"] or "null"),
+                                  style={"background":"#FEE2E2","color":"#991B1B","fontSize":10.5,"padding":"1px 6px","borderRadius":4}),
+                        html.Span(" → ",style={"color":MUTED,"margin":"0 4px"}),
+                        html.Span(str(a["new_value"]),
+                                  style={"background":"#D1FAE5","color":"#065F46","fontSize":10.5,"padding":"1px 6px","borderRadius":4}),
+                    ]),
+                ], style={"padding":"6px 9px","background":BG,"borderRadius":7,"marginBottom":5}))
+
+        evts = [e for e in EXECUTION_EVENTS if e["entity_id"]==sel]
+        if evts:
+            body.append(_sec(f"Execution events ({len(evts)})"))
+            for e in evts[:6]:
+                body.append(html.Div([
+                    html.Span(e["timestamp"][:10],style={"fontSize":9.5,"color":MUTED,
+                                                           "fontFamily":"'DM Mono',monospace","marginRight":8}),
+                    html.Span(e["action"],style={"fontSize":11.5,"fontWeight":600,"color":TEXT}),
+                    html.Span(f" → {e['result']}",style={"fontSize":10.5,"color":SUCCESS,"marginLeft":6}),
+                ], style={"padding":"4px 0","borderBottom":f"1px solid {BG}",
+                           "display":"flex","flexWrap":"wrap","alignItems":"center"}))
+
+        if not body:
+            body = [html.Div("No activity recorded.",style={"color":MUTED,"fontSize":12})]
+    else:
+        body = []
+
+    return [hdr] + (body if isinstance(body,list) else [body])
+
+
+# ── Advance stage ─────────────────────────────────────────────────────────────
+@app.callback(Output("adv-msg","children"),
+              Input("adv-btn","n_clicks"), State("sel","data"),
+              prevent_initial_call=True)
+def do_advance(n, sel):
+    if not n: return no_update
+    r = advance_stage(sel)
+    col = SUCCESS if r["ok"] else DANGER
+    msg = f"✓ Advanced to: {r['new_stage']}" if r["ok"] else r["message"]
+    return html.Div(msg, style={"color":col,"fontSize":12,"fontWeight":700,"marginTop":6})
+
+
+# ── Deep-dive drawer ──────────────────────────────────────────────────────────
+@app.callback(
+    [Output("dv-drawer","children"), Output("dv-drawer","style")],
+    [Input(f"dv-{t}","n_clicks") for t in ["entity","rel","workflow","perm","exec","version","audit","api"]],
+    prevent_initial_call=True,
+)
+def dv(*_):
+    ctx = callback_context
+    if not ctx.triggered: return no_update, no_update
+    tid = ctx.triggered[0]["prop_id"].split(".")[0].replace("dv-","")
+    show = {"display":"block","padding":"14px 18px","background":BG,
+            "borderBottom":f"2px solid {BORDER}","maxHeight":"55vh","overflowY":"auto"}
+    return _dv_content(tid), show
+
+
+def _dv_content(tid):
+    titles = {"entity":"📦 Entity System","rel":"🔗 Relationships","workflow":"⚙ Workflows",
+               "perm":"🔐 Permissions","exec":"⏱ Execution","version":"🌳 Versions",
+               "audit":"📋 Audit","api":"🌐 API Log"}
+    hdr = html.Div([
+        html.Span(titles.get(tid,tid),style={"fontSize":15,"fontWeight":800,"color":NAVY}),
+        html.Span("  ·  Click sidebar button again to close",
+                  style={"fontSize":11,"color":MUTED,"marginLeft":8}),
+    ], style={"marginBottom":12})
+
+    if tid == "entity":
+        return [hdr, dash_table.DataTable(data=MASTER_ENTITY_TABLE,
+            columns=[{"name":c.replace("_"," ").title(),"id":c}
+                     for c in ["entity_type","category","id_prefix","description"]], **_tbl())]
+
+    if tid == "rel":
+        return [hdr, dash_table.DataTable(data=MASTER_RELATIONSHIP_TABLE,
+            columns=[{"name":c.replace("_"," ").title(),"id":c}
+                     for c in ["rel_id","from_entity","rel_type","to_entity","cardinality","category","subset","description"]],
+            **_tbl(), page_size=10)]
+
+    if tid == "workflow":
+        wf_cards = []
         for nid, nd in NODES.items():
             if nd["type"] != WORKFLOW: continue
             stages = nd.get("stages",[])
-            ci = next((i for i,s in enumerate(stages) if s["status"]=="current"), -1)
-            total = len(stages)
-            pct = int((ci/max(total-1,1))*100) if ci>=0 else 0
-            sc_, _ = get_status_color(nd["status"])
+            ci = next((i for i,s in enumerate(stages) if s["status"]=="current"),-1)
+            pct = int((ci/max(len(stages)-1,1))*100) if ci>=0 else 0
+            wf_cards.append(html.Div([
+                html.Div(nd["name"],style={"fontSize":13,"fontWeight":700,"color":NAVY,"marginBottom":5}),
+                html.Div([
+                    html.Span([
+                        html.Span("✓ " if s["status"]=="done" else "● " if s["status"]=="current" else "○ "),
+                        s["name"],
+                    ], style={"fontSize":10.5,"fontWeight":700 if s["status"]=="current" else 500,
+                               "color":SUCCESS if s["status"]=="done" else TEAL if s["status"]=="current" else MUTED,
+                               "background":SURFACE,"border":f"1px solid {BORDER}","borderRadius":4,
+                               "padding":"3px 8px","marginRight":3,"display":"inline-block","marginBottom":3})
+                    for s in stages
+                ], style={"marginBottom":6}),
+                html.Div([html.Div(style={"width":f"{pct}%","height":3,"background":TEAL,"borderRadius":2})],
+                          style={"background":BORDER,"borderRadius":2,"height":3}),
+                html.Div(f"{pct}% · {nd.get('stage','—')} · {nd.get('status','—')}",
+                          style={"fontSize":10,"color":MUTED,"marginTop":3}),
+            ], style={"background":SURFACE,"border":f"1px solid {BORDER}","borderRadius":8,
+                       "padding":"10px 12px","display":"inline-block","minWidth":260,
+                       "verticalAlign":"top","margin":"0 8px 8px 0"}))
+        return [hdr, html.Div(wf_cards)]
 
-            with st.expander(f"**{nd['name']}** — {nd['subtype']} · {nd.get('stage','—')}"):
-                c1, c2 = st.columns([3,1])
-                with c1:
-                    stage_parts = []
-                    for i, s in enumerate(stages):
-                        if s["status"]=="done":
-                            stage_parts.append(f'<span style="background:{BRAND["success"]};color:white;'
-                                               f'padding:3px 10px;border-radius:4px;font-size:10px;'
-                                               f'font-weight:700;margin:2px;display:inline-block">✓ {s["name"]}</span>')
-                        elif s["status"]=="current":
-                            stage_parts.append(f'<span style="background:{BRAND["teal"]};color:white;'
-                                               f'padding:3px 10px;border-radius:4px;font-size:10px;'
-                                               f'font-weight:800;margin:2px;display:inline-block;'
-                                               f'box-shadow:0 0 0 3px rgba(0,165,168,0.25)">● {s["name"]}</span>')
-                        else:
-                            stage_parts.append(f'<span style="background:{BRAND["bg"]};color:{BRAND["muted"]};'
-                                               f'border:1px solid {BRAND["border"]};'
-                                               f'padding:3px 10px;border-radius:4px;font-size:10px;'
-                                               f'margin:2px;display:inline-block">○ {s["name"]}</span>')
-                    arrow = f'<span style="color:{BRAND["muted"]};margin:0 2px">›</span>'
-                    st.markdown(f'<div style="display:flex;flex-wrap:wrap;gap:2px;align-items:center;margin-bottom:8px">'
-                                f'{arrow.join(stage_parts)}</div>', unsafe_allow_html=True)
-                    st.progress(pct/100 if pct>0 else 0)
-                    st.caption(f"Progress: {pct}% · stage {ci+1 if ci>=0 else 0}/{total}")
-                with c2:
-                    st.markdown(f"**Owner:** {nd['owner']}")
-                    st.markdown(f"**Status:** <span style='color:{sc_}'>{nd['status']}</span>", unsafe_allow_html=True)
-                    if 0<=ci<total-1:
-                        if st.button("⏭ Advance", key=f"wf_{nid}", type="primary"):
-                            r = advance_stage(nid)
-                            if r["ok"]: st.success(f"→ {r['new_stage']}"); st.rerun()
-                            else: st.error(r["message"])
+    if tid == "perm":
+        return [hdr, dash_table.DataTable(data=MASTER_PERMISSION_TABLE,
+            columns=[{"name":c.replace("_"," ").title(),"id":c}
+                     for c in ["entity","section","section_type","stage","analyst","validator","approver"]],
+            **_tbl(), page_size=15,
+            style_data_conditional=[
+                {"if":{"filter_query":f"{{{col}}} = 'M'","column_id":col},
+                 "backgroundColor":"#D1FAE5","color":"#065F46","fontWeight":800}
+                for col in ["analyst","validator","approver"]
+            ] + [
+                {"if":{"filter_query":f"{{{col}}} = 'V'","column_id":col},
+                 "backgroundColor":"#DBEAFE","color":"#1E40AF"}
+                for col in ["analyst","validator","approver"]
+            ] + [
+                {"if":{"filter_query":f"{{{col}}} = 'H'","column_id":col},
+                 "backgroundColor":"#F1F5F9","color":"#9CA3AF"}
+                for col in ["analyst","validator","approver"]
+            ])]
 
-    with wt2:
-        st.markdown("**Stage Entity Table**")
-        st.dataframe(pd.DataFrame(STAGE_ENTITY_TABLE), use_container_width=True, hide_index=True)
-        st.markdown("---")
-        st.markdown("**Legal stage transitions (state machine)**")
-        for subtype, stages in STAGE_TRANSITIONS.items():
-            parts = [f'<span style="background:#EBF5FF;color:{BRAND["navy"]};padding:3px 9px;'
-                     f'border-radius:4px;font-size:11px;font-weight:600">{s}</span>'
-                     for s in stages]
-            arrow = f'<span style="color:{BRAND["muted"]}"> → </span>'
-            st.markdown(f"**{subtype}:** {arrow.join(parts)}", unsafe_allow_html=True)
-            st.markdown("")
+    if tid == "exec":
+        return [hdr]+[html.Div([
+            html.Span(e["timestamp"][:16],style={"fontSize":10,"fontFamily":"'DM Mono',monospace","color":MUTED,"marginRight":10}),
+            html.Span(e["action"],style={"fontSize":12.5,"fontWeight":700,"color":NAVY,"marginRight":8}),
+            html.Span(e["entity_name"],style={"fontSize":10,"background":BG,"padding":"1px 7px","borderRadius":4,"marginRight":6}),
+            html.Span(e["stage"],style={"fontSize":10,"background":"#EFF6FF","color":NAVY,"padding":"1px 7px","borderRadius":4,"marginRight":6}),
+            html.Span(e["result"],style={"fontSize":10.5,"fontWeight":700,"color":SUCCESS if e["result"] in ("Approved","Published","Active") else TEAL,"marginRight":10}),
+            html.Span(f"👤 {e['actor']}",style={"fontSize":10,"color":MUTED,"marginRight":8}),
+            html.Span(e["api_call"],style={"fontSize":10,"fontFamily":"'DM Mono',monospace","background":"#DBEAFE","color":"#1E40AF","padding":"1px 7px","borderRadius":4}),
+        ], style={"display":"flex","flexWrap":"wrap","alignItems":"center","gap":2,
+                   "padding":"8px 12px","background":SURFACE,"border":f"1px solid {BORDER}",
+                   "borderLeft":f"3px solid {TEAL}","borderRadius":"0 7px 7px 0","marginBottom":5})
+                for e in EXECUTION_EVENTS]
 
-    with wt3:
-        st.markdown("**Task Entity Table** — atomic actions within stages")
-        st.dataframe(pd.DataFrame(TASK_ENTITY_TABLE), use_container_width=True, hide_index=True)
+    if tid == "version":
+        out = [hdr]
+        grp: dict = {}
+        for v in VERSION_REGISTRY: grp.setdefault(v["entity_id"],[]).append(v)
+        for eid, vers in grp.items():
+            chain = []
+            for i, v in enumerate(vers):
+                is_a  = v["status"] in ("Active","Under Review")
+                is_ap = v["status"] == "Approved"
+                bg = "#E6FAFA" if is_a else "#D1FAE5" if is_ap else BG
+                bdr= TEAL if is_a else SUCCESS if is_ap else BORDER
+                chain.append(html.Div([
+                    html.Div(v["version_id"],style={"fontSize":14,"fontWeight":800,"color":NAVY,"fontFamily":"'DM Mono',monospace"}),
+                    html.Div(v["status"],style={"fontSize":10,"fontWeight":700,"color":TEAL if is_a else SUCCESS if is_ap else MUTED}),
+                    html.Div(v["created_at"][:10],style={"fontSize":9.5,"color":MUTED}),
+                ], style={"background":bg,"border":f"1.5px solid {bdr}","borderRadius":7,
+                           "padding":"6px 12px","display":"inline-block","verticalAlign":"middle","margin":3}))
+                if i<len(vers)-1: chain.append(html.Span("→",style={"color":MUTED,"fontSize":16,"verticalAlign":"middle"}))
+            out.append(html.Div([
+                html.Div(vers[0]["entity_name"],style={"fontSize":13,"fontWeight":700,"color":NAVY,"marginBottom":5}),
+                html.Div(chain),
+            ], style={"background":SURFACE,"border":f"1px solid {BORDER}","borderRadius":8,"padding":"10px","marginBottom":8}))
+        return out
 
-    with wt4:
-        st.markdown("**Automation Rules** — trigger → action engine")
-        st.caption("From KT sessions: 4 trigger types — entity transition, attribute updated, time-based, entity created. "
-                   "Actions: update attribute, entity transition, generate event, generate association (subprocess), "
-                   "generate document, send mail, create entity, archive entity, generate report.")
+    if tid == "audit":
+        return [hdr]+[html.Div([
+            html.Div([
+                html.Span(a["timestamp"][:16],style={"fontSize":9.5,"fontFamily":"'DM Mono',monospace","color":MUTED,"marginRight":8}),
+                html.Span(a["entity_name"],style={"fontSize":12,"fontWeight":700,"color":NAVY,"marginRight":6}),
+                html.Span(a["field"],style={"fontSize":10,"fontFamily":"'DM Mono',monospace","background":BG,"padding":"1px 6px","borderRadius":4,"marginRight":6}),
+                html.Span(f"by {a['changed_by']}",style={"fontSize":10.5,"color":MUTED}),
+            ],style={"marginBottom":4}),
+            html.Div([
+                html.Span(str(a["old_value"] or "null"),style={"background":"#FEE2E2","color":"#991B1B","fontSize":11,"padding":"1px 7px","borderRadius":4}),
+                html.Span(" → ",style={"color":MUTED,"margin":"0 5px"}),
+                html.Span(str(a["new_value"]),style={"background":"#D1FAE5","color":"#065F46","fontSize":11,"padding":"1px 7px","borderRadius":4}),
+                html.Span(a["stage"],style={"fontSize":9.5,"background":"#EFF6FF","color":NAVY,"padding":"1px 6px","borderRadius":4,"marginLeft":8}),
+            ]),
+        ],style={"padding":"8px 12px","borderLeft":f"3px solid {BORDER}","background":BG,
+                  "borderRadius":"0 7px 7px 0","marginBottom":5}) for a in AUDIT_LOG]
 
-        tc_colors = {
-            "Entity transition": ("#DBEAFE","#1E40AF"),
-            "Time-based":        ("#FEF3C7","#92400E"),
-            "Attribute updated": ("#EDE9FE","#6D28D9"),
-            "Entity created":    ("#D1FAE5","#065F46"),
-        }
-        for rule in AUTOMATION_RULES:
-            bg_, tc_ = tc_colors.get(rule["trigger_type"],("#F3F4F6","#374151"))
-            with st.expander(f"**{rule['name']}** — {rule['trigger_type']}"):
-                c1_, c2_ = st.columns([1,2])
-                with c1_:
-                    st.markdown(f'<span style="background:{bg_};color:{tc_};padding:4px 10px;'
-                                f'border-radius:6px;font-size:11px;font-weight:700">{rule["trigger_type"]}</span>',
-                                unsafe_allow_html=True)
-                    st.markdown(f"**Entity:** {rule['entity_type']}")
-                with c2_:
-                    st.markdown(f"**When:** `{rule['trigger_condition']}`")
-                    st.markdown(f"**Then:** {rule['action']}")
+    if tid == "api":
+        MC = {"POST":("#DBEAFE","#1E40AF"),"PATCH":("#FEF3C7","#92400E"),"GET":("#D1FAE5","#065F46")}
+        return [hdr]+[html.Div([
+            html.Span(a["method"],style={"fontSize":10,"fontWeight":800,"padding":"2px 7px","borderRadius":4,
+                "background":MC.get(a["method"],("#F1F5F9",MUTED))[0],
+                "color":MC.get(a["method"],("#F1F5F9",MUTED))[1],"fontFamily":"'DM Mono',monospace","marginRight":8}),
+            html.Span(a["endpoint"],style={"fontSize":11,"fontFamily":"'DM Mono',monospace","marginRight":8}),
+            html.Span(str(a["status_code"]),style={"fontSize":10,"fontWeight":700,"padding":"2px 6px","borderRadius":4,
+                "background":"#D1FAE5" if a["status_code"]<300 else "#FEE2E2",
+                "color":"#065F46" if a["status_code"]<300 else "#991B1B","marginRight":8}),
+            html.Span(f"{a['latency_ms']}ms",style={"fontSize":10.5,"fontWeight":700,
+                "color":DANGER if a["latency_ms"]>1000 else WARN if a["latency_ms"]>200 else SUCCESS,"marginRight":12}),
+            html.Br(),
+            html.Span(a["payload_summary"],style={"fontSize":11.5,"fontWeight":600,"color":TEXT}),
+            html.Span(" → ",style={"color":MUTED}),
+            html.Span(a["response_summary"],style={"fontSize":11,"color":MUTED}),
+        ],style={"background":SURFACE,"border":f"1px solid {BORDER}","borderRadius":7,
+                  "padding":"9px 12px","marginBottom":5,"display":"flex","flexWrap":"wrap",
+                  "alignItems":"center","gap":2}) for a in API_LOG]
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 6 — PERMISSIONS
-# ══════════════════════════════════════════════════════════════════════════════
-with t_perm:
-    st.markdown("**Permission Matrix** — section × stage × role")
-    st.caption("From KT sessions: Permissions are per section, per workflow stage. "
-               "Sections can be Manage (editable), View (read-only), or Hidden. "
-               "Hidden section technique: used for derived attributes the user should not see but system uses.")
+    return [hdr, html.Div("Coming soon.", style={"color":MUTED})]
 
-    # Rule cards
-    r1, r2, r3 = st.columns(3)
-    with r1:
-        st.markdown(f"""<div style="background:#F0FDF4;border:1px solid #6EE7B7;border-radius:8px;padding:12px">
-        <div style="font-size:11px;font-weight:800;color:#065F46;margin-bottom:4px">🟢 STATIC</div>
-        <div style="font-size:11px;color:#064E3B">Editable <b>only</b> at Registration/Creation.<br>
-        Frozen in all later stages. Preserves data integrity.<br><em>Examples: Preliminary, Model Identification, General Info</em></div>
-        </div>""", unsafe_allow_html=True)
-    with r2:
-        st.markdown(f"""<div style="background:#FFF7ED;border:1px solid #FED7AA;border-radius:8px;padding:12px">
-        <div style="font-size:11px;font-weight:800;color:#C2410C;margin-bottom:4px">🟡 DYNAMIC</div>
-        <div style="font-size:11px;color:#9A3412">Editable during <b>specific workflow stages</b>.<br>
-        Different roles own at different stages.<br><em>Examples: Governance, Testing, Findings, Remediation</em></div>
-        </div>""", unsafe_allow_html=True)
-    with r3:
-        st.markdown(f"""<div style="background:#F9FAFB;border:1px solid {BRAND['border']};border-radius:8px;padding:12px">
-        <div style="font-size:11px;font-weight:800;color:#374151;margin-bottom:4px">⚫ SYSTEM</div>
-        <div style="font-size:11px;color:#374151">Never user-editable. Hidden pre-Approval.<br>
-        Auto-computed by derivation engine.<br><em>Examples: Derived risk score, Audit Trail, Lineage</em></div>
-        </div>""", unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.markdown("**Interactive Permission Derivation**")
-    fc1, fc2, fc3 = st.columns(3)
-    with fc1: demo_sec = st.selectbox("Section type",["static","dynamic","system"],key="ds")
-    with fc2: demo_stg = st.selectbox("Stage",["Registration","Documentation Review","Validation","Approval","Monitoring","Active","Created","Closed"],key="dstg")
-    with fc3: demo_rol = st.selectbox("Role",["analyst","validator","approver"],key="dr")
+def _tbl(**kw):
+    return dict(
+        style_table={"overflowX":"auto"},
+        style_header={"background":BG,"fontWeight":700,"fontSize":10,"color":MUTED,
+                       "textTransform":"uppercase","border":f"1px solid {BORDER}","borderBottom":f"2px solid {BORDER}"},
+        style_cell={"fontSize":12,"padding":"7px 10px","border":f"1px solid {BORDER}",
+                     "fontFamily":"'DM Sans',sans-serif","color":TEXT,"whiteSpace":"normal","textAlign":"left"},
+        **kw,
+    )
 
-    perm_r = get_permission(demo_sec, demo_stg, demo_rol)
-    pc = {BRAND["success"]:"manage",BRAND["teal"]:"view",BRAND["muted"]:"hidden"}
-    pc = BRAND["success"] if perm_r=="manage" else BRAND["teal"] if perm_r=="view" else BRAND["muted"]
-    pb = "#D1FAE5" if perm_r=="manage" else "#DBEAFE" if perm_r=="view" else "#F3F4F6"
-    st.markdown(f'<div style="background:{pb};border:1px solid {pc}33;border-radius:8px;padding:12px 16px;'
-                f'display:inline-block;margin:8px 0">'
-                f'<span style="font-size:16px;font-weight:800;color:{pc}">{perm_r.upper()}</span>'
-                f'<span style="font-size:12px;color:{pc};margin-left:8px">({demo_sec} · {demo_stg} · {demo_rol})</span>'
-                f'</div>', unsafe_allow_html=True)
 
-    st.markdown("---")
-    perm_e = st.selectbox("Filter by entity:", ["All"]+sorted(set(r["entity"] for r in MASTER_PERMISSION_TABLE)),
-                           key="perm_e")
-    fp = MASTER_PERMISSION_TABLE if perm_e=="All" else \
-         [r for r in MASTER_PERMISSION_TABLE if r["entity"]==perm_e]
-
-    def cperm2(val):
-        if val=="M": return "background-color:#D1FAE5;color:#065F46;font-weight:800"
-        if val=="V": return "background-color:#DBEAFE;color:#1E40AF"
-        if val=="H": return "background-color:#F3F4F6;color:#9CA3AF"
-        return ""
-
-    styled_full = safe_map(pd.DataFrame(fp).style, cperm2, subset=["analyst","validator","approver"])
-    st.dataframe(styled_full, use_container_width=True, hide_index=True)
-    st.caption("M = Manage (editable) · V = View (read-only) · H = Hidden")
-
-    st.markdown("---")
-    st.markdown("**Section Type Registry**")
-    st.dataframe(pd.DataFrame([{"Section": k, "Type": v["type"], "Description": v["description"]}
-                                for k, v in SECTION_TYPE_REGISTRY.items()]),
-                 use_container_width=True, hide_index=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 7 — EXECUTION ENGINE
-# ══════════════════════════════════════════════════════════════════════════════
-with t_exec:
-    st.markdown("**Execution Engine** — event timeline with state transitions")
-    st.caption("Each event = one state transition. API call links each event to its external trigger.")
-
-    ef = st.selectbox("Filter:", ["All"]+list({e["entity_name"] for e in EXECUTION_EVENTS}), key="exec_ef")
-    fevts = EXECUTION_EVENTS if ef=="All" else [e for e in EXECUTION_EVENTS if e["entity_name"]==ef]
-
-    for evt in fevts:
-        res_col = BRAND["success"] if evt["result"] in ("Approved","Published","Active") else \
-                  BRAND["warning"] if evt["result"] in ("Under Review","In Progress") else BRAND["teal"]
-        cls = "approved" if "Approv" in evt["result"] else "review" if "Review" in evt["result"] else ""
-        c1, c2 = st.columns([1,5])
-        with c1:
-            st.markdown(f'<div class="mono" style="color:{BRAND["muted"]};font-size:10px;text-align:right;padding-top:4px">'
-                        f'{evt["timestamp"][:10]}<br>{evt["timestamp"][11:]}</div>', unsafe_allow_html=True)
-        with c2:
-            ver_tag = f'<span class="mono" style="font-size:10px;color:{BRAND["muted"]};margin-left:4px">{evt["version"]}</span>' if evt["version"] else ""
-            st.markdown(f'<div class="tl-evt {cls}">'
-                        f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-                        f'<span style="font-size:12.5px;font-weight:700;color:{BRAND["navy"]}">{evt["action"]}</span>'
-                        f'<span style="background:{BRAND["bg"]};color:{BRAND["text"]};padding:1px 7px;border-radius:4px;font-size:10px">{evt["entity_name"]}</span>'
-                        f'<span style="background:#EBF5FF;color:{BRAND["navy"]};padding:1px 7px;border-radius:4px;font-size:10px">{evt["stage"]}</span>'
-                        f'<span style="color:{res_col};font-size:10.5px;font-weight:700">{evt["result"]}</span>'
-                        f'</div>'
-                        f'<div style="display:flex;gap:10px;margin-top:4px;flex-wrap:wrap;align-items:center">'
-                        f'<span style="font-size:10px;color:{BRAND["muted"]}">👤 {evt["actor"]}</span>'
-                        f'<span class="apill apill-POST mono">{evt["api_call"]}</span>'
-                        f'{ver_tag}</div></div>',
-                        unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.dataframe(pd.DataFrame(fevts)[["event_id","timestamp","entity_name","stage","action","actor","result","api_call","version"]],
-                 use_container_width=True, hide_index=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 8 — VERSION REGISTRY
-# ══════════════════════════════════════════════════════════════════════════════
-with t_version:
-    st.markdown("**Version Registry** — entity version history with parent lineage")
-    st.caption("Each version is a snapshot. Versions form a chain: root → v1 → v2 → v3 (current). "
-               "Branching possible for hotfixes. Click a version to see its state snapshot.")
-
-    ve = st.selectbox("Filter:", ["All"]+list({v["entity_id"] for v in VERSION_REGISTRY}), key="ve")
-    fvers = VERSION_REGISTRY if ve=="All" else [v for v in VERSION_REGISTRY if v["entity_id"]==ve]
-
-    grouped: dict = {}
-    for v in fvers:
-        grouped.setdefault(v["entity_id"], []).append(v)
-
-    for eid, versions in grouped.items():
-        st.markdown(f"**{versions[0]['entity_name']}** — version chain")
-        chain = []
-        for i, v in enumerate(versions):
-            is_act = v["status"] in ("Active","Under Review")
-            is_app = v["status"] == "Approved"
-            cls = "active" if is_act else "approved" if is_app else "superseded"
-            sc = BRAND["teal"] if is_act else BRAND["success"] if is_app else BRAND["muted"]
-            chain.append(f'<div class="ver-node {cls}">'
-                         f'<div style="font-size:14px;font-weight:800;color:{BRAND["navy"]};font-family:JetBrains Mono,monospace">{v["version_id"]}</div>'
-                         f'<div style="font-size:10px;font-weight:700;color:{sc}">{v["status"]}</div>'
-                         f'<div style="font-size:10px;color:{BRAND["muted"]}">{v["stage"]}</div>'
-                         f'<div style="font-size:10px;color:{BRAND["muted"]}">{v["created_at"][:10]}</div>'
-                         f'<div style="font-size:10px;color:{BRAND["muted"]}">{v["created_by"]}</div>'
-                         f'</div>')
-            if i < len(versions)-1:
-                chain.append(f'<span style="display:inline-block;color:{BRAND["muted"]};font-size:18px;'
-                             f'vertical-align:middle;margin:0 2px">→</span>')
-        st.markdown(f'<div style="overflow-x:auto;white-space:nowrap;padding:8px 0">{"".join(chain)}</div>',
-                    unsafe_allow_html=True)
-
-        vrows = [{"Version":v["version_id"],"Parent":v["parent_version"] or "root",
-                  "Status":v["status"],"Stage":v["stage"],"By":v["created_by"],
-                  "Date":v["created_at"][:10],"Changes":v["changes"]} for v in versions]
-        st.dataframe(pd.DataFrame(vrows), use_container_width=True, hide_index=True)
-        st.markdown("---")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 9 — AUDIT LOG
-# ══════════════════════════════════════════════════════════════════════════════
-with t_audit:
-    st.markdown("**Audit Log** — field-level change tracking")
-    st.caption("From KT sessions: Activity report tracks user logging and field changes. "
-               "Every API call that updates an attribute is logged here with old→new values.")
-
-    ae = st.selectbox("Entity:", ["All"]+list({a["entity_name"] for a in AUDIT_LOG}), key="ae")
-    af = st.selectbox("Field:", ["All"]+sorted({a["field"] for a in AUDIT_LOG}), key="af")
-    au = st.selectbox("User:", ["All"]+sorted({a["changed_by"] for a in AUDIT_LOG}), key="au")
-
-    fa = AUDIT_LOG
-    if ae!="All": fa = [a for a in fa if a["entity_name"]==ae]
-    if af!="All": fa = [a for a in fa if a["field"]==af]
-    if au!="All": fa = [a for a in fa if a["changed_by"]==au]
-
-    st.markdown(f"**{len(fa)} audit events**")
-    for a in fa:
-        st.markdown(f'<div class="aud-row">'
-                    f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-                    f'<span class="mono" style="font-size:10px;color:{BRAND["muted"]}">{a["timestamp"]}</span>'
-                    f'<span style="font-size:12px;font-weight:700;color:{BRAND["navy"]}">{a["entity_name"]}</span>'
-                    f'<span class="mono" style="background:{BRAND["bg"]};color:{BRAND["text"]};padding:1px 6px;border-radius:4px;font-size:10px">{a["field"]}</span>'
-                    f'<span style="font-size:10px;color:{BRAND["muted"]}">changed by</span>'
-                    f'<span style="font-size:11.5px;font-weight:700">{a["changed_by"]}</span>'
-                    f'</div>'
-                    f'<div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap">'
-                    f'<span style="background:#FEE2E2;color:#991B1B;padding:1px 7px;border-radius:4px;font-size:11px">{a["old_value"] or "null"}</span>'
-                    f'<span style="color:{BRAND["muted"]}">→</span>'
-                    f'<span style="background:#D1FAE5;color:#065F46;padding:1px 7px;border-radius:4px;font-size:11px">{a["new_value"]}</span>'
-                    f'<span style="background:#EBF5FF;color:{BRAND["navy"]};padding:1px 6px;border-radius:4px;font-size:10px">{a["stage"]}</span>'
-                    f'<span style="font-size:10px;color:{BRAND["muted"]}">via: {a["triggered_by"]}</span>'
-                    f'</div></div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.dataframe(pd.DataFrame(fa), use_container_width=True, hide_index=True)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 10 — API LOG
-# ══════════════════════════════════════════════════════════════════════════════
-with t_api:
-    st.markdown("**API Log** — external request/response trace")
-    st.caption("From KT sessions: Document template, automation, reports all triggered via API. "
-               "Generate document, generate report, send mail — all API calls that external systems trigger.")
-
-    posts  = sum(1 for a in API_LOG if a["method"]=="POST")
-    patches= sum(1 for a in API_LOG if a["method"]=="PATCH")
-    gets   = sum(1 for a in API_LOG if a["method"]=="GET")
-    avg_lat = sum(a["latency_ms"] for a in API_LOG)//len(API_LOG)
-
-    st.markdown(f"""
-    <div class="kpi-row">
-      <div class="kpi-card"><div class="kpi-label">Total calls</div><div class="kpi-value">{len(API_LOG)}</div></div>
-      <div class="kpi-card" style="border-left-color:#1D4ED8"><div class="kpi-label">POST</div><div class="kpi-value" style="color:#1D4ED8">{posts}</div><div class="kpi-sub">Create/Advance/Generate</div></div>
-      <div class="kpi-card" style="border-left-color:{BRAND['warning']}"><div class="kpi-label">PATCH</div><div class="kpi-value" style="color:{BRAND['warning']}">{patches}</div><div class="kpi-sub">Update fields</div></div>
-      <div class="kpi-card" style="border-left-color:{BRAND['success']}"><div class="kpi-label">GET</div><div class="kpi-value" style="color:{BRAND['success']}">{gets}</div><div class="kpi-sub">Read/Fetch</div></div>
-      <div class="kpi-card"><div class="kpi-label">Avg latency</div><div class="kpi-value">{avg_lat}<span style="font-size:13px">ms</span></div></div>
-    </div>""", unsafe_allow_html=True)
-
-    for a in API_LOG:
-        mc = f"apill-{a['method']}"
-        sc_c = f"apill-{a['status_code']}"
-        lc = BRAND["danger"] if a["latency_ms"]>1000 else BRAND["warning"] if a["latency_ms"]>200 else BRAND["success"]
-        st.markdown(f'<div style="background:white;border:1px solid {BRAND["border"]};border-radius:8px;'
-                    f'padding:10px 14px;margin-bottom:6px">'
-                    f'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-                    f'<span class="apill {mc}">{a["method"]}</span>'
-                    f'<span class="mono" style="font-size:11px;color:{BRAND["text"]}">{a["endpoint"]}</span>'
-                    f'<span class="apill {sc_c}">{a["status_code"]}</span>'
-                    f'<span style="font-size:10.5px;color:{lc};font-weight:700">{a["latency_ms"]}ms</span>'
-                    f'<span class="mono" style="font-size:10px;color:{BRAND["muted"]}">{a["timestamp"]}</span>'
-                    f'</div>'
-                    f'<div style="margin-top:4px;font-size:11.5px">'
-                    f'<span style="color:{BRAND["text"]};font-weight:600">{a["payload_summary"]}</span>'
-                    f' → <span style="color:{BRAND["muted"]}">{a["response_summary"]}</span>'
-                    f'</div>'
-                    f'<div style="font-size:10px;color:{BRAND["muted"]};margin-top:2px">Actor: {a["actor"]} · Entity: {a["entity_id"]}</div>'
-                    f'</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.dataframe(pd.DataFrame(API_LOG)[["api_id","timestamp","method","endpoint","status_code",
-                                        "latency_ms","actor","entity_id","payload_summary","response_summary"]],
-                 use_container_width=True, hide_index=True)
+# ═══════════════════════════════════════════════════════════════════════════════
+if __name__ == "__main__":
+    app.run(debug=False, host="0.0.0.0", port=8050)
