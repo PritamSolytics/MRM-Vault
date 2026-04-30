@@ -312,10 +312,123 @@ app.layout = html.Div([
                       "padding":"10px 18px","background":SURFACE,
                       "borderBottom":f"1px solid {BORDER}","flexWrap":"wrap","gap":8}),
 
-            # Deep-dive drawer
+            # Deep-dive drawer (all sections except entity which has permanent panel below)
             html.Div(id="dv-drawer",
                      style={"display":"none","padding":"14px 18px","background":BG,
                             "borderBottom":f"2px solid {BORDER}","maxHeight":"55vh","overflowY":"auto"}),
+
+            # ── Permanent Entity System panel (always in DOM so callbacks work) ──
+            html.Div(id="entity-panel", style={"display":"none"},
+                     children=[
+                         html.Div([
+                             html.Div([
+                                 html.Span("📦 Entity System — Master Template",
+                                           style={"fontSize":15,"fontWeight":800,"color":NAVY}),
+                                 html.Span("  ·  Click '📦 Entity System' in sidebar to toggle",
+                                           style={"fontSize":11,"color":MUTED,"marginLeft":8}),
+                             ], style={"marginBottom":12}),
+
+                             # Master entity table
+                             html.Div([
+                                 html.Div("Master Entity Table",
+                                          style={"fontSize":13,"fontWeight":700,"color":NAVY,"marginBottom":6}),
+                                 html.Div("Assessment → Model → Subprocesses → Findings. "
+                                          "Workflow is a process-level entity.",
+                                          style={"fontSize":11,"color":MUTED,"marginBottom":10}),
+                                 dash_table.DataTable(
+                                     id="master-entity-tbl",
+                                     data=MASTER_ENTITY_TABLE,
+                                     columns=[{"name":c.replace("_"," ").title(),"id":c}
+                                              for c in ["entity_type","category","id_prefix","description"]],
+                                     **_tbl(),
+                                     style_data_conditional=[
+                                         {"if":{"filter_query":"{category} = 'Business'"},"backgroundColor":"#EFF6FF"},
+                                         {"if":{"filter_query":"{category} = 'Process'"},"backgroundColor":"#FFF7ED"},
+                                         {"if":{"filter_query":"{category} = 'Output'"},"backgroundColor":"#F0FDF4"},
+                                     ],
+                                 ),
+                             ], style={"background":SURFACE,"border":f"1px solid {BORDER}",
+                                        "borderRadius":10,"padding":14,"marginBottom":14}),
+
+                             # Sub-template explorer
+                             html.Div([
+                                 html.Div("Entity Sub-Template Explorer",
+                                          style={"fontSize":13,"fontWeight":700,"color":NAVY,"marginBottom":4}),
+                                 html.Div("Select entity type to see: sections, section types, "
+                                          "attributes, stage × role permissions, conditional sections, "
+                                          "document template placeholders.",
+                                          style={"fontSize":11,"color":MUTED,"marginBottom":10}),
+                                 dcc.Dropdown(
+                                     id="et-sel",
+                                     options=[{"label":e["entity_type"],"value":e["entity_type"]}
+                                              for e in MASTER_ENTITY_TABLE],
+                                     value=["Model"],
+                                     multi=True,
+                                     placeholder="Select entity type(s)…",
+                                     style={"fontSize":12,"marginBottom":12},
+                                 ),
+                                 html.Div(id="et-subtpl",
+                                          children=[html.Div("Select an entity type above.",
+                                                              style={"color":MUTED,"fontSize":12})]),
+                             ], style={"background":SURFACE,"border":f"1px solid {BORDER}",
+                                        "borderRadius":10,"padding":14,"marginBottom":14}),
+
+                             # Section type registry
+                             html.Div([
+                                 html.Div("Section Type Registry",
+                                          style={"fontSize":13,"fontWeight":700,"color":NAVY,"marginBottom":8}),
+                                 html.Div([
+                                     html.Div([html.Div("🟢 STATIC",style={"fontWeight":800,"color":"#065F46","marginBottom":3,"fontSize":11.5}),
+                                               html.Div("Editable only at Registration/Creation. Frozen in later stages.",style={"fontSize":11,"color":"#064E3B"})],
+                                              style={"background":"#F0FDF4","border":"1px solid #6EE7B7","borderRadius":8,"padding":"10px 12px","flex":1}),
+                                     html.Div([html.Div("🟡 DYNAMIC",style={"fontWeight":800,"color":"#C2410C","marginBottom":3,"fontSize":11.5}),
+                                               html.Div("Editable during specific workflow stages. Role-dependent.",style={"fontSize":11,"color":"#9A3412"})],
+                                              style={"background":"#FFF7ED","border":"1px solid #FED7AA","borderRadius":8,"padding":"10px 12px","flex":1}),
+                                     html.Div([html.Div("⚫ SYSTEM",style={"fontWeight":800,"color":"#374151","marginBottom":3,"fontSize":11.5}),
+                                               html.Div("Never user-editable. Hidden pre-Approval. Auto-computed.",style={"fontSize":11,"color":"#374151"})],
+                                              style={"background":BG,"border":f"1px solid {BORDER}","borderRadius":8,"padding":"10px 12px","flex":1}),
+                                 ], style={"display":"flex","gap":10,"marginBottom":10}),
+                                 dash_table.DataTable(
+                                     id="sec-registry-tbl",
+                                     data=[{"Section":k,"Type":v["type"],"Description":v["description"]}
+                                           for k,v in SECTION_TYPE_REGISTRY.items()],
+                                     columns=[{"name":c,"id":c} for c in ["Section","Type","Description"]],
+                                     **_tbl(), page_size=12,
+                                     style_data_conditional=[
+                                         {"if":{"filter_query":"{Type} = 'static'"},"backgroundColor":"#F5F3FF","color":"#5B21B6","fontWeight":600},
+                                         {"if":{"filter_query":"{Type} = 'dynamic'"},"backgroundColor":"#FFF7ED","color":"#C2410C","fontWeight":600},
+                                         {"if":{"filter_query":"{Type} = 'system'"},"backgroundColor":"#F1F5F9","color":"#374151"},
+                                     ],
+                                 ),
+                             ], style={"background":SURFACE,"border":f"1px solid {BORDER}",
+                                        "borderRadius":10,"padding":14,"marginBottom":14}),
+
+                             # Full attribute library
+                             html.Div([
+                                 html.Div("Full Attribute Library",
+                                          style={"fontSize":13,"fontWeight":700,"color":NAVY,"marginBottom":4}),
+                                 html.Div("field_name = system key · display_name = shown in UI · "
+                                          "doc_placeholder used in Word document generation.",
+                                          style={"fontSize":11,"color":MUTED,"marginBottom":10}),
+                                 dash_table.DataTable(
+                                     id="attr-lib-tbl",
+                                     data=[{"Field":a["field_name"],"Display":a["display_name"],
+                                            "Type":a["data_type"],"Section":a["section"],
+                                            "Entities":", ".join(a["entity_types"]),
+                                            "Req":"✓" if a["required"] else "","Example":a["example"]}
+                                           for a in ATTRIBUTE_LIBRARY],
+                                     columns=[{"name":c,"id":c}
+                                              for c in ["Field","Display","Type","Section","Entities","Req","Example"]],
+                                     **_tbl(), page_size=10,
+                                     style_data_conditional=[
+                                         {"if":{"filter_query":"{Req} = '✓'"},"fontWeight":700,"color":NAVY},
+                                     ],
+                                 ),
+                             ], style={"background":SURFACE,"border":f"1px solid {BORDER}",
+                                        "borderRadius":10,"padding":14}),
+                         ], style={"padding":"14px 18px","background":BG,
+                                    "borderBottom":f"2px solid {BORDER}"}),
+                     ]),
 
             # ── COMMAND CENTRE: graph | detail panel ──────────────────────
             html.Div([
@@ -832,204 +945,238 @@ def do_advance(n, sel):
     return html.Div(msg, style={"color":col,"fontSize":12,"fontWeight":700,"marginTop":6})
 
 
-# ── Entity sub-template callback ──────────────────────────────────────────────
+# ── Entity panel toggle (sidebar 📦 button) ───────────────────────────────────
+@app.callback(
+    Output("entity-panel","style", allow_duplicate=True),
+    Input("dv-entity","n_clicks"),
+    State("entity-panel","style"),
+    prevent_initial_call=True,
+)
+def toggle_entity_panel(n, current_style):
+    if not n: return no_update
+    is_hidden = (current_style or {}).get("display","none") == "none"
+    return {"display":"block","maxHeight":"70vh","overflowY":"auto"} if is_hidden else {"display":"none"}
+
+
+# ── Entity sub-template (lives permanently in DOM — one callback, works always) ─
 @app.callback(
     Output("et-subtpl","children"),
     Input("et-sel","value"),
-    prevent_initial_call=False,
 )
-def et_subtpl(sel_types):
+def render_et_subtpl(sel_types):
     if not sel_types:
-        return html.Div("Select one or more entity types above to see their full template.",
-                         style={"color":MUTED,"fontSize":12,"padding":"8px 0"})
+        return html.Div("Select one or more entity types above.",
+                         style={"color":MUTED,"fontSize":12})
 
+    types_list = sel_types if isinstance(sel_types, list) else [sel_types]
     out = []
-    for etype in (sel_types if isinstance(sel_types, list) else [sel_types]):
+
+    for etype in types_list:
         tmpl  = TEMPLATE_CONFIGS.get(etype, {})
         prows = [r for r in MASTER_PERMISSION_TABLE if r["entity"] == etype]
-        attrs_for_type = [a for a in ATTRIBUTE_LIBRARY
-                          if etype in a.get("entity_types",[]) or "All" in a.get("entity_types",[])]
+        etype_attrs = [a for a in ATTRIBUTE_LIBRARY
+                       if etype in a.get("entity_types",[]) or "All" in a.get("entity_types",[])]
 
-        # ── Template config header ────────────────────────────────────────
-        config_section = html.Div([
+        # Colour accent per entity type
+        accent = (TEAL if etype in ("Model","Assessment")
+                  else ORANGE if etype == "Finding"
+                  else PURPLE if etype in ("Validation","Approval")
+                  else NAVY)
+
+        # ── Template config ───────────────────────────────────────────────
+        tmpl_hdr = html.Div([
             html.Div([
                 html.Span(etype, style={"fontSize":15,"fontWeight":800,"color":NAVY,
                                          "fontFamily":"'Plus Jakarta Sans',sans-serif"}),
-                html.Span(f"  {tmpl.get('id_prefix','')}-XXX",
+                html.Span(f"  {tmpl.get('id_prefix','?')}-XXX",
                           style={"fontSize":12,"color":MUTED,"marginLeft":8,
                                  "fontFamily":"'DM Mono',monospace"}),
             ], style={"marginBottom":5}),
-            html.Div(tmpl.get("description","No template config defined."),
+            html.Div(tmpl.get("description","No template config — add to TEMPLATE_CONFIGS in data_model.py"),
                      style={"fontSize":11.5,"color":MUTED,"lineHeight":1.6,"marginBottom":8}),
             html.Div([
                 html.Div([
-                    html.Div("Default Workflow",style={"fontSize":9,"fontWeight":700,"color":MUTED,
+                    html.Div("DEFAULT WORKFLOW",style={"fontSize":8.5,"fontWeight":700,"color":MUTED,
                                                         "textTransform":"uppercase","letterSpacing":".07em","marginBottom":2}),
                     html.Div(tmpl.get("workflow","—"),style={"fontSize":12,"fontWeight":600,"color":TEAL}),
                 ], style={"flex":1}),
                 html.Div([
-                    html.Div("Preliminary Attributes",style={"fontSize":9,"fontWeight":700,"color":MUTED,
+                    html.Div("PRELIMINARY ATTRIBUTES",style={"fontSize":8.5,"fontWeight":700,"color":MUTED,
                                                                "textTransform":"uppercase","letterSpacing":".07em","marginBottom":2}),
-                    html.Div(", ".join(tmpl.get("preliminary_attrs",[])),
-                             style={"fontSize":11,"fontWeight":500,"color":TEXT,
-                                    "fontFamily":"'DM Mono',monospace"}),
+                    html.Div([
+                        html.Span(a, style={"background":"#EFF6FF","color":NAVY,"fontSize":10.5,
+                                             "fontWeight":600,"padding":"2px 8px","borderRadius":5,
+                                             "marginRight":4,"marginBottom":3,"display":"inline-block"})
+                        for a in tmpl.get("preliminary_attrs",[])
+                    ]),
                 ], style={"flex":2}),
-            ], style={"display":"flex","gap":16,"background":BG,"borderRadius":8,
-                       "padding":"10px 12px","marginBottom":10}),
-        ] if tmpl else [html.Div(f"No TEMPLATE_CONFIG defined for {etype}.",
-                                   style={"fontSize":11,"color":MUTED,"marginBottom":8})])
+            ], style={"display":"flex","gap":14,"background":"#EFF6FF","borderRadius":8,
+                       "padding":"10px 12px","border":"1px solid #BFDBFE"}) if tmpl else html.Div(),
+        ])
 
-        # ── Sections + permissions ────────────────────────────────────────
+        # ── Sections with attributes + permissions side by side ───────────
         secs_seen = []
         for r in prows:
-            if r["section"] not in secs_seen:
-                secs_seen.append(r["section"])
-
-        # Also pull sections from TEMPLATE_CONFIGS if prows empty
-        if not secs_seen and tmpl.get("sections"):
-            secs_seen = list(tmpl["sections"].keys())
+            if r["section"] not in secs_seen: secs_seen.append(r["section"])
+        if not secs_seen:
+            secs_seen = list(tmpl.get("sections",{}).keys())
 
         section_cards = []
         for sec in secs_seen:
             st_info = SECTION_TYPE_REGISTRY.get(sec, {})
             st_     = st_info.get("type","dynamic")
             stbg, stcl = STYPE_CLR.get(st_, ("#F1F5F9","#374151"))
-
-            # Attributes that belong to this section
-            sec_attrs = [a for a in attrs_for_type if a.get("section") == sec]
-
-            # Permission rows for this section
-            sp = [r for r in prows if r["section"] == sec]
-
-            # Template-defined attrs for this section (from TEMPLATE_CONFIGS)
-            tmpl_sec_attrs = tmpl.get("sections", {}).get(sec, [])
+            sp        = [r for r in prows if r["section"] == sec]
+            tmpl_attrs= tmpl.get("sections",{}).get(sec,[])
+            lib_attrs = [a for a in etype_attrs if a.get("section") == sec]
 
             section_cards.append(html.Div([
-                # Section header row
+                # Header
                 html.Div([
-                    html.Span("📁 ", style={"fontSize":13}),
-                    html.Span(sec, style={"fontSize":13,"fontWeight":700,"color":NAVY,"marginRight":8}),
+                    html.Span(f"📁 {sec}",
+                              style={"fontSize":12.5,"fontWeight":700,"color":NAVY,"marginRight":8}),
                     html.Span(st_, style={"fontSize":9,"fontWeight":700,"padding":"2px 8px",
                                            "borderRadius":12,"background":stbg,"color":stcl,
                                            "textTransform":"uppercase","letterSpacing":".05em"}),
                 ], style={"marginBottom":4}),
                 html.Div(st_info.get("description",""),
-                         style={"fontSize":10.5,"color":MUTED,"marginBottom":8,"lineHeight":1.5}),
+                         style={"fontSize":10.5,"color":MUTED,"marginBottom":10,"lineHeight":1.5}),
 
-                # Two-column: attrs left, permissions right
+                # Two-col: attrs | permissions
                 html.Div([
-                    # Left — attributes in this section
+                    # Left: attributes
                     html.Div([
                         html.Div("ATTRIBUTES", style={"fontSize":8.5,"fontWeight":700,"color":MUTED,
-                                                        "textTransform":"uppercase","letterSpacing":".07em","marginBottom":5}),
+                                                        "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
                         *([html.Div([
-                            html.Div(a["display_name"],style={"fontSize":11,"fontWeight":600,"color":TEXT,"marginBottom":1}),
+                            html.Div(a["display_name"],
+                                     style={"fontSize":11.5,"fontWeight":600,"color":TEXT,"marginBottom":1}),
                             html.Div([
-                                html.Span(a["data_type"],style={"fontSize":9.5,"background":"#EFF6FF",
-                                                                  "color":NAVY,"padding":"1px 6px","borderRadius":4,
-                                                                  "marginRight":4}),
+                                html.Span(a["data_type"],
+                                          style={"fontSize":9.5,"background":"#EFF6FF","color":NAVY,
+                                                 "padding":"1px 6px","borderRadius":4,"marginRight":5}),
                                 html.Span("required" if a["required"] else "optional",
-                                          style={"fontSize":9.5,
-                                                 "color":DANGER if a["required"] else MUTED}),
+                                          style={"fontSize":9.5,"color":DANGER if a["required"] else MUTED,
+                                                 "fontWeight":600}),
                             ]),
                             html.Div(f"e.g. {a['example']}",
-                                     style={"fontSize":10,"color":MUTED,"marginTop":1,
+                                     style={"fontSize":10,"color":MUTED,"marginTop":2,
                                             "fontFamily":"'DM Mono',monospace"}),
-                        ], style={"padding":"5px 0","borderBottom":f"1px solid {BG}"})
-                          for a in sec_attrs]
-                         if sec_attrs
-                         else [html.Div(
-                            ", ".join(tmpl_sec_attrs) if tmpl_sec_attrs else "—",
-                            style={"fontSize":11,"color":MUTED,"fontFamily":"'DM Mono',monospace"}
-                         )]),
+                        ], style={"padding":"6px 0","borderBottom":f"1px solid {BG}"})
+                          for a in lib_attrs]
+                         if lib_attrs
+                         else [html.Div([
+                            html.Span(a, style={"background":BG,"border":f"1px solid {BORDER}",
+                                                 "fontSize":10.5,"padding":"2px 8px","borderRadius":4,
+                                                 "marginRight":3,"marginBottom":3,"display":"inline-block"})
+                            for a in tmpl_attrs
+                          ]) if tmpl_attrs
+                          else [html.Div("See attribute library below.",
+                                          style={"fontSize":11,"color":MUTED,"fontStyle":"italic"})]]),
                     ], style={"flex":1,"minWidth":0}),
 
-                    # Right — permission matrix for this section
+                    # Right: permission matrix
                     html.Div([
-                        html.Div("STAGE × ROLE PERMISSIONS",
-                                  style={"fontSize":8.5,"fontWeight":700,"color":MUTED,
-                                         "textTransform":"uppercase","letterSpacing":".07em","marginBottom":5}),
+                        html.Div("STAGE × ROLE", style={"fontSize":8.5,"fontWeight":700,"color":MUTED,
+                                                          "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
                         *([html.Div([
-                            html.Span(r["stage"][:20],
-                                      style={"fontSize":10.5,"color":TEXT,"flex":1}),
-                            *[html.Span(lbl,style={
-                                "fontSize":10,"fontWeight":800 if r[role]=="M" else 600,
-                                "padding":"2px 7px","borderRadius":5,"marginLeft":3,"minWidth":28,"textAlign":"center",
+                            html.Span(r["stage"],
+                                      style={"fontSize":11,"color":TEXT,"flex":1}),
+                            *[html.Span(lbl, style={
+                                "fontSize":11,"fontWeight":800 if r[role]=="M" else 600,
+                                "padding":"2px 8px","borderRadius":5,"marginLeft":4,
+                                "minWidth":30,"textAlign":"center","display":"inline-block",
                                 "background":PERM_CLR.get(r[role],PERM_CLR["H"])[0],
                                 "color":PERM_CLR.get(r[role],PERM_CLR["H"])[1],
-                                "display":"inline-block",
                             }) for role, lbl in [("analyst","A"),("validator","V"),("approver","Ap")]],
-                          ], style={"display":"flex","alignItems":"center","padding":"3px 0",
+                          ], style={"display":"flex","alignItems":"center","padding":"4px 0",
                                      "borderBottom":f"1px solid {BG}"})
                           for r in sp]
                          if sp
-                         else [html.Div("No permission rows defined.",
-                                         style={"fontSize":11,"color":MUTED})]),
+                         else [html.Div("No permission rows. Add to MASTER_PERMISSION_TABLE.",
+                                         style={"fontSize":11,"color":MUTED,"fontStyle":"italic"})]),
                     ], style={"flex":1,"minWidth":0,"paddingLeft":14,
                                "borderLeft":f"1px solid {BORDER}"}),
-                ], style={"display":"flex","gap":14}),
+                ], style={"display":"flex","gap":12}),
 
             ], style={"background":SURFACE,"border":f"1px solid {BORDER}","borderRadius":9,
                        "padding":"12px 14px","marginBottom":8}))
 
         # ── Conditional sections ──────────────────────────────────────────
-        cond_secs = tmpl.get("conditional_sections", {})
+        cond_secs = tmpl.get("conditional_sections",{})
         cond_el = html.Div([
             html.Div("Conditional Sections",
-                     style={"fontSize":11,"fontWeight":700,"color":NAVY,"marginBottom":6}),
-            html.Div("These sections are shown/hidden dynamically based on attribute values.",
-                     style={"fontSize":10.5,"color":MUTED,"marginBottom":8}),
+                     style={"fontSize":10,"fontWeight":700,"color":"#C2410C",
+                            "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
+            html.Div("These sections show/hide based on attribute values — no page reload needed.",
+                     style={"fontSize":11,"color":MUTED,"marginBottom":8}),
             *[html.Div([
-                html.Span(f"📁 {sec_name}", style={"fontSize":12,"fontWeight":600,"color":NAVY,"marginRight":8}),
-                html.Span("shown when: ", style={"fontSize":10,"color":MUTED}),
-                html.Span(condition, style={"fontSize":10.5,"fontFamily":"'DM Mono',monospace",
-                                             "background":"#F5F3FF","color":PURPLE,
-                                             "padding":"2px 8px","borderRadius":5}),
-            ], style={"padding":"6px 0","borderBottom":f"1px solid {BG}","display":"flex",
-                       "alignItems":"center","flexWrap":"wrap","gap":4})
-              for sec_name, condition in cond_secs.items()],
-        ], style={"background":"#F5F3FF","border":"1px solid #DDD6FE","borderRadius":8,
-                   "padding":"10px 12px","marginBottom":8}) if cond_secs else html.Div()
+                html.Span(f"📋 {sn}",
+                          style={"fontWeight":700,"color":NAVY,"fontSize":12,"marginRight":8}),
+                html.Span("shown when: ",style={"fontSize":11,"color":MUTED}),
+                html.Code(cond, style={"fontSize":11,"background":"#F1F5F9","padding":"2px 8px",
+                                        "borderRadius":5,"color":NAVY,
+                                        "fontFamily":"'DM Mono',monospace"}),
+            ], style={"padding":"5px 0","borderBottom":f"1px solid {BORDER}",
+                       "display":"flex","alignItems":"center","flexWrap":"wrap","gap":4})
+              for sn, cond in cond_secs.items()],
+        ], style={"background":"#FFF7ED","border":"1px solid #FED7AA","borderRadius":8,
+                   "padding":"10px 14px","marginBottom":10}) if cond_secs else html.Div()
 
-        # ── Document placeholder table ────────────────────────────────────
-        placeholders = tmpl.get("doc_placeholders", [])
-        placeholder_el = html.Div([
+        # ── Document placeholders ─────────────────────────────────────────
+        doc_phs = tmpl.get("doc_placeholders",[])
+        doc_el = html.Div([
             html.Div("Document Template Placeholders",
-                     style={"fontSize":11,"fontWeight":700,"color":NAVY,"marginBottom":6}),
-            html.Div("Use these in your Word .docx template. System auto-fills from entity attributes.",
-                     style={"fontSize":10.5,"color":MUTED,"marginBottom":8}),
+                     style={"fontSize":10,"fontWeight":700,"color":MUTED,
+                            "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
+            html.Div("Upload a Word .docx with these {{placeholders}} — system auto-fills from entity data.",
+                     style={"fontSize":11,"color":MUTED,"marginBottom":8}),
             html.Div([
-                html.Span(p, style={"fontSize":10.5,"fontWeight":600,"fontFamily":"'DM Mono',monospace",
-                                     "background":"#F5F3FF","color":PURPLE,
-                                     "padding":"2px 9px","borderRadius":5,
-                                     "border":"1px solid #DDD6FE",
-                                     "marginRight":5,"marginBottom":5,"display":"inline-block"})
-                for p in placeholders
+                html.Code(p, style={"fontSize":10.5,"background":"#F5F3FF","color":PURPLE,
+                                     "padding":"2px 8px","borderRadius":5,"border":"1px solid #DDD6FE",
+                                     "marginRight":4,"marginBottom":4,"display":"inline-block",
+                                     "fontFamily":"'DM Mono',monospace"})
+                for p in doc_phs
             ]),
         ], style={"background":BG,"border":f"1px solid {BORDER}","borderRadius":8,
-                   "padding":"10px 12px","marginBottom":8}) if placeholders else html.Div()
+                   "padding":"10px 14px","marginBottom":10}) if doc_phs else html.Div()
+
+        # ── Entity-type attribute library ─────────────────────────────────
+        attr_tbl = html.Div([
+            html.Div(f"Attribute Library — {etype} ({len(etype_attrs)} attributes)",
+                     style={"fontSize":10,"fontWeight":700,"color":MUTED,
+                            "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
+            dash_table.DataTable(
+                data=[{"Field":a["field_name"],"Display":a["display_name"],
+                       "Type":a["data_type"],"Section":a["section"],
+                       "Req":"✓" if a["required"] else "","Example":a["example"]}
+                      for a in etype_attrs],
+                columns=[{"name":c,"id":c} for c in ["Field","Display","Type","Section","Req","Example"]],
+                **_tbl(), page_size=8,
+                style_data_conditional=[
+                    {"if":{"filter_query":"{Req} = '✓'"},"fontWeight":700,"color":NAVY},
+                ],
+            ),
+        ], style={"marginTop":10}) if etype_attrs else html.Div()
 
         out.append(html.Div([
-            # Coloured left bar per entity type
-            html.Div(style={"width":4,"background":TEAL if etype in ("Model","Assessment")
-                            else ORANGE if etype == "Finding"
-                            else PURPLE if etype == "Validation"
-                            else NAVY,
-                            "borderRadius":"4px 0 0 4px","flexShrink":0}),
+            # Left colour bar
+            html.Div(style={"width":4,"background":accent,"borderRadius":"4px 0 0 4px","flexShrink":0}),
             html.Div([
-                config_section,
+                tmpl_hdr,
                 html.Div("Sections & Permissions",
-                          style={"fontSize":12,"fontWeight":700,"color":NAVY,
-                                 "borderBottom":f"1px solid {BORDER}","paddingBottom":6,"marginBottom":10}),
+                          style={"fontSize":11,"fontWeight":700,"color":NAVY,
+                                 "borderBottom":f"1px solid {BORDER}",
+                                 "paddingBottom":6,"marginBottom":10,"marginTop":10}),
                 *section_cards,
                 cond_el,
-                placeholder_el,
+                doc_el,
+                attr_tbl,
             ], style={"flex":1,"minWidth":0,"padding":"14px 16px"}),
-        ], style={"display":"flex","background":SURFACE,
-                   "border":f"1px solid {BORDER}","borderRadius":10,
-                   "overflow":"hidden","marginBottom":16}))
+        ], style={"display":"flex","background":SURFACE,"border":f"1px solid {BORDER}",
+                   "borderRadius":10,"overflow":"hidden","marginBottom":14}))
 
-    return out
+    return out if out else html.Div("No data for selected types.",style={"color":MUTED})
 
 
 # ── Deep-dive drawer ──────────────────────────────────────────────────────────
@@ -1042,6 +1189,9 @@ def dv(*_):
     ctx = callback_context
     if not ctx.triggered: return no_update, no_update
     tid = ctx.triggered[0]["prop_id"].split(".")[0].replace("dv-","")
+    # Entity is handled by its own permanent panel — drawer stays hidden for it
+    if tid == "entity":
+        return html.Div(), {"display":"none"}
     show = {"display":"block","padding":"14px 18px","background":BG,
             "borderBottom":f"2px solid {BORDER}","maxHeight":"55vh","overflowY":"auto"}
     return _dv_content(tid), show
@@ -1356,242 +1506,5 @@ def _dv_content(tid):
     return [hdr, html.Div("Coming soon.", style={"color":MUTED})]
 
 
-# ── Entity sub-template callback (inside deep-dive drawer) ──────────────────
-@app.callback(
-    Output("et-subtpl","children"),
-    Input("et-sel","value"),
-)
-def et_subtpl(sel_types):
-    if not sel_types:
-        return html.Div("Select an entity type above.",
-                         style={"color":MUTED,"fontSize":12})
-
-    out = []
-    types_list = sel_types if isinstance(sel_types, list) else [sel_types]
-    for etype in types_list:
-        prows = [r for r in MASTER_PERMISSION_TABLE if r["entity"] == etype]
-        tmpl  = TEMPLATE_CONFIGS.get(etype, {})
-
-        # ── Template config header ────────────────────────────────────────
-        tmpl_hdr = html.Div([
-            html.Div([
-                html.Span(etype, style={"fontSize":15,"fontWeight":800,"color":NAVY}),
-                html.Span(f"  {tmpl.get('id_prefix','')}-XXX",
-                          style={"fontSize":12,"color":MUTED,"marginLeft":6,
-                                 "fontFamily":"'DM Mono',monospace"}),
-            ], style={"marginBottom":4}),
-            html.Div(tmpl.get("description",""),
-                     style={"fontSize":11.5,"color":MUTED,"lineHeight":1.6,"marginBottom":6}),
-            html.Div([
-                html.Span("Workflow: ", style={"fontWeight":700,"fontSize":11.5,"color":NAVY}),
-                html.Span(tmpl.get("workflow","—"),
-                          style={"fontSize":11.5,"color":TEAL,"fontWeight":600}),
-            ], style={"marginBottom":8}),
-        ]) if tmpl else html.Div()
-
-        # ── Preliminary attributes ────────────────────────────────────────
-        prelim = html.Div([
-            html.Div("Preliminary Attributes — always at top of entity page",
-                     style={"fontSize":10,"fontWeight":700,"color":MUTED,
-                            "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
-            html.Div([
-                html.Span(a, style={"background":"#EFF6FF","color":NAVY,"fontSize":10.5,
-                                     "fontWeight":600,"padding":"3px 9px","borderRadius":5,
-                                     "marginRight":4,"marginBottom":4,"display":"inline-block"})
-                for a in tmpl.get("preliminary_attrs", [])
-            ]),
-        ], style={"marginBottom":14,"background":"#EFF6FF","borderRadius":8,
-                   "padding":"10px 12px","border":"1px solid #BFDBFE"}) \
-            if tmpl.get("preliminary_attrs") else html.Div()
-
-        # ── Descriptive sections with permissions ─────────────────────────
-        sections_out = []
-        if prows:
-            secs_seen = []
-            for r in prows:
-                if r["section"] not in secs_seen:
-                    secs_seen.append(r["section"])
-
-            for sec in secs_seen:
-                st_info = SECTION_TYPE_REGISTRY.get(sec, {})
-                st_     = st_info.get("type","dynamic")
-                stbg, stcl = {"static":("#EDE9FE","#5B21B6"),
-                               "dynamic":("#FFF7ED","#C2410C"),
-                               "system":("#F1F5F9","#374151")}.get(st_, ("#F1F5F9","#374151"))
-                sp        = [r for r in prows if r["section"] == sec]
-                sec_attrs = tmpl.get("sections", {}).get(sec, [])
-
-                sections_out.append(html.Div([
-                    # Section title row
-                    html.Div([
-                        html.Span(f"📁 {sec}",
-                                  style={"fontSize":13,"fontWeight":700,"color":NAVY}),
-                        html.Span(st_, style={"fontSize":9,"fontWeight":700,
-                                               "padding":"2px 8px","borderRadius":12,
-                                               "background":stbg,"color":stcl,"marginLeft":8,
-                                               "textTransform":"uppercase","letterSpacing":".05em"}),
-                    ], style={"marginBottom":4}),
-                    html.Div(st_info.get("description",""),
-                             style={"fontSize":11,"color":MUTED,"marginBottom":8,"lineHeight":1.5}),
-
-                    # Attributes in this section
-                    html.Div([
-                        html.Div("Attributes:",
-                                 style={"fontSize":9.5,"fontWeight":700,"color":MUTED,
-                                        "textTransform":"uppercase","letterSpacing":".07em","marginBottom":4}),
-                        html.Div([
-                            html.Span(a, style={"background":BG,"border":f"1px solid {BORDER}",
-                                                 "fontSize":10.5,"padding":"2px 8px","borderRadius":4,
-                                                 "marginRight":3,"marginBottom":3,"display":"inline-block"})
-                            for a in sec_attrs
-                        ]) if sec_attrs else html.Span(
-                            "Defined in attribute library",
-                            style={"fontSize":11,"color":MUTED,"fontStyle":"italic"}),
-                    ], style={"marginBottom":8}),
-
-                    # Permission table
-                    html.Div("Stage-wise permissions:",
-                             style={"fontSize":9.5,"fontWeight":700,"color":MUTED,
-                                    "textTransform":"uppercase","letterSpacing":".07em","marginBottom":4}),
-                    dash_table.DataTable(
-                        id={"type":"sec-perm-tbl","index":f"{etype}_{sec}"},
-                        data=[{"Stage":r["stage"],"Analyst":r["analyst"],
-                               "Validator":r["validator"],"Approver":r["approver"]}
-                              for r in sp],
-                        columns=[{"name":c,"id":c}
-                                 for c in ["Stage","Analyst","Validator","Approver"]],
-                        style_table={"overflowX":"auto","marginBottom":0},
-                        style_header={"background":BG,"fontWeight":700,"fontSize":9.5,
-                                       "color":MUTED,"textTransform":"uppercase",
-                                       "border":f"1px solid {BORDER}"},
-                        style_cell={"fontSize":11.5,"padding":"5px 9px",
-                                     "border":f"1px solid {BORDER}",
-                                     "fontFamily":"'DM Sans',sans-serif","textAlign":"center"},
-                        style_data_conditional=[
-                            {"if":{"filter_query":f"{{{col}}} = 'M'","column_id":col},
-                             "backgroundColor":"#D1FAE5","color":"#065F46","fontWeight":800}
-                            for col in ["Analyst","Validator","Approver"]
-                        ] + [
-                            {"if":{"filter_query":f"{{{col}}} = 'V'","column_id":col},
-                             "backgroundColor":"#DBEAFE","color":"#1E40AF"}
-                            for col in ["Analyst","Validator","Approver"]
-                        ] + [
-                            {"if":{"filter_query":f"{{{col}}} = 'H'","column_id":col},
-                             "backgroundColor":"#F1F5F9","color":"#9CA3AF"}
-                            for col in ["Analyst","Validator","Approver"]
-                        ],
-                    ),
-                ], style={"background":BG,"border":f"1px solid {BORDER}",
-                           "borderRadius":9,"padding":"12px 14px","marginBottom":10}))
-        else:
-            sections_out = [html.Div(f"No permission data defined for {etype}.",
-                                      style={"color":MUTED,"fontSize":12})]
-
-        # ── Conditional sections ──────────────────────────────────────────
-        cond_secs = tmpl.get("conditional_sections", {})
-        cond_el = html.Div([
-            html.Div("Conditional Sections (shown/hidden based on attribute values)",
-                     style={"fontSize":10,"fontWeight":700,"color":MUTED,
-                            "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
-            *[html.Div([
-                html.Span(f"📋 {sn}",
-                          style={"fontWeight":700,"color":NAVY,"fontSize":12,"marginRight":6}),
-                html.Span("shown when: ",
-                          style={"fontSize":11,"color":MUTED}),
-                html.Code(cond, style={"fontSize":11,"background":"#F1F5F9","padding":"2px 6px",
-                                        "borderRadius":4,"color":NAVY}),
-            ], style={"padding":"5px 0","borderBottom":f"1px solid {BORDER}"})
-              for sn, cond in cond_secs.items()],
-        ], style={"background":"#FFF7ED","border":"1px solid #FED7AA",
-                   "borderRadius":9,"padding":"10px 14px","marginBottom":12}) \
-            if cond_secs else html.Div()
-
-        # ── Attribute library for this entity type ────────────────────────
-        etype_attrs = [a for a in ATTRIBUTE_LIBRARY
-                       if etype in a.get("entity_types",[]) or "All" in a.get("entity_types",[])]
-        attr_tbl = html.Div([
-            html.Div(f"Attribute Library — {etype} ({len(etype_attrs)} attributes)",
-                     style={"fontSize":10,"fontWeight":700,"color":MUTED,
-                            "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
-            dash_table.DataTable(
-                id={"type":"attr-lib-tbl","index":etype},
-                data=[{
-                    "Field name": a["field_name"],
-                    "Display name": a["display_name"],
-                    "Data type": a["data_type"],
-                    "Section": a["section"],
-                    "Required": "✓" if a["required"] else "",
-                    "Example": a["example"],
-                } for a in etype_attrs],
-                columns=[{"name":c,"id":c}
-                         for c in ["Field name","Display name","Data type","Section","Required","Example"]],
-                **_tbl(),
-                page_size=8,
-                style_data_conditional=[
-                    {"if":{"filter_query":"{Required} = '✓'"},
-                     "fontWeight":700,"color":NAVY},
-                ],
-            ),
-        ], style={"marginBottom":10}) if etype_attrs else html.Div()
-
-        # ── Document template placeholders ────────────────────────────────
-        doc_phs = tmpl.get("doc_placeholders", [])
-        doc_el = html.Div([
-            html.Div("Document Template Placeholders",
-                     style={"fontSize":10,"fontWeight":700,"color":MUTED,
-                            "textTransform":"uppercase","letterSpacing":".07em","marginBottom":6}),
-            html.Div("These {{placeholders}} auto-populate when you click Generate Document "
-                     "on a model page.",
-                     style={"fontSize":11,"color":MUTED,"marginBottom":8,"lineHeight":1.5}),
-            html.Div([
-                html.Code(p, style={"fontSize":10.5,"background":"#F1F5F9","color":NAVY,
-                                     "padding":"2px 8px","borderRadius":4,
-                                     "marginRight":4,"marginBottom":4,"display":"inline-block"})
-                for p in doc_phs
-            ]),
-        ], style={"background":BG,"border":f"1px solid {BORDER}","borderRadius":9,
-                   "padding":"10px 14px","marginBottom":10}) if doc_phs else html.Div()
-
-        out.append(html.Div([
-            html.Div(style={"width":4,"background":TEAL,"borderRadius":2,
-                             "position":"absolute","left":0,"top":0,"bottom":0}),
-            html.Div([
-                tmpl_hdr,
-                prelim,
-                html.Div("Descriptive Sections — click to expand",
-                         style={"fontSize":10,"fontWeight":700,"color":MUTED,
-                                "textTransform":"uppercase","letterSpacing":".07em","marginBottom":8}),
-                *sections_out,
-                cond_el,
-                attr_tbl,
-                doc_el,
-            ], style={"paddingLeft":16}),
-        ], style={
-            "background":SURFACE,"border":f"1px solid {BORDER}","borderRadius":10,
-            "padding":"14px","marginBottom":16,
-            "position":"relative","overflow":"hidden",
-        }))
-
-    return out if out else html.Div("No data.", style={"color":MUTED})
-
-
-def _tbl(**kw):
-    return dict(
-        style_table={"overflowX":"auto"},
-        style_header={
-            "background":BG,"fontWeight":700,"fontSize":10,"color":MUTED,
-            "textTransform":"uppercase","border":f"1px solid {BORDER}",
-            "borderBottom":f"2px solid {BORDER}",
-        },
-        style_cell={
-            "fontSize":12,"padding":"7px 10px","border":f"1px solid {BORDER}",
-            "fontFamily":"'DM Sans',sans-serif","color":TEXT,
-            "whiteSpace":"normal","textAlign":"left",
-        },
-        **kw,
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=8050)
