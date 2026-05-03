@@ -1180,21 +1180,37 @@ def render_et_subtpl(sel_types):
 
 
 # ── Deep-dive drawer ──────────────────────────────────────────────────────────
+# Store which tab is currently open so we can toggle it closed on re-click
 @app.callback(
-    [Output("dv-drawer","children"), Output("dv-drawer","style")],
+    [Output("dv-drawer","children"),
+     Output("dv-drawer","style"),
+     Output("dv-active","data")],
     [Input(f"dv-{t}","n_clicks") for t in ["entity","rel","workflow","perm","exec","version","audit","api"]],
+    State("dv-active","data"),
     prevent_initial_call=True,
 )
-def dv(*_):
+def dv(*args):
     ctx = callback_context
-    if not ctx.triggered: return no_update, no_update
+    if not ctx.triggered: return no_update, no_update, no_update
+
+    # args = (n_clicks for each button..., current_active_state)
+    current_active = args[-1] or ""
     tid = ctx.triggered[0]["prop_id"].split(".")[0].replace("dv-","")
-    # Entity is handled by its own permanent panel — drawer stays hidden for it
+
+    # Entity has its own permanent panel — drawer always stays hidden for it
     if tid == "entity":
-        return html.Div(), {"display":"none"}
-    show = {"display":"block","padding":"14px 18px","background":BG,
+        return html.Div(), {"display":"none"}, no_update
+
+    SHOW = {"display":"block","padding":"14px 18px","background":BG,
             "borderBottom":f"2px solid {BORDER}","maxHeight":"55vh","overflowY":"auto"}
-    return _dv_content(tid), show
+    HIDE = {"display":"none"}
+
+    # Same tab clicked again → close (toggle off)
+    if tid == current_active:
+        return html.Div(), HIDE, ""
+
+    # Different tab clicked → switch content and show
+    return _dv_content(tid), SHOW, tid
 
 
 def _dv_content(tid):
