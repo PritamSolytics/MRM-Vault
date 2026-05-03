@@ -491,7 +491,17 @@ app.layout = html.Div([
                     ], style={"display":"flex","borderBottom":f"1px solid {BORDER}","marginBottom":10,"gap":2}),
 
                     html.Div(id="panel",
-                             style={"height":"calc(100vh - 230px)","overflowY":"auto","paddingRight":2}),
+                             style={"height":"calc(100vh - 280px)","overflowY":"auto","paddingRight":2}),
+
+                    # Permanent advance stage button (always in DOM)
+                    html.Div([
+                        html.Button("⏭  Advance Stage", id="adv-btn", n_clicks=0,
+                                    style={"background":TEAL,"color":WHITE,"border":"none",
+                                           "borderRadius":7,"padding":"7px 14px","fontSize":12,
+                                           "fontWeight":700,"cursor":"pointer","width":"100%",
+                                           "fontFamily":"'DM Sans',sans-serif"}),
+                        html.Div(id="adv-msg", style={"fontSize":11,"marginTop":5}),
+                    ], id="adv-area", style={"display":"none","marginTop":10}),
                 ], style={
                     "width":320,"flexShrink":0,"background":SURFACE,
                     "border":f"1px solid {BORDER}","borderRadius":10,"padding":"10px 14px",
@@ -727,12 +737,10 @@ def panel(sel, tab):
                 ], style={"padding":"5px 0","borderBottom":f"1px solid {BG}",
                            "display":"flex","alignItems":"center"}))
             if 0<=ci<len(nd["stages"])-1:
-                body.append(html.Button("⏭  Advance Stage", id="adv-btn", n_clicks=0,
-                                        style={"marginTop":10,"background":TEAL,"color":WHITE,
-                                               "border":"none","borderRadius":7,"padding":"7px 14px",
-                                               "fontSize":12,"fontWeight":700,"cursor":"pointer",
-                                               "width":"100%","fontFamily":"'DM Sans',sans-serif"}))
-                body.append(html.Div(id="adv-msg"))
+                body.append(html.Div(
+                    "💡 Use the Advance Stage button in the graph detail panel or click a node to advance.",
+                    style={"fontSize":11,"color":TEAL,"marginTop":8,"padding":"6px 10px",
+                           "background":"#F0FDFA","borderRadius":6,"border":"1px solid #99F6E4"}))
 
     # ── TAB: LINKED ───────────────────────────────────────────────────────
     elif tab == "linked":
@@ -933,16 +941,35 @@ def panel(sel, tab):
     return [hdr] + (body if isinstance(body,list) else [body])
 
 
-# ── Advance stage ─────────────────────────────────────────────────────────────
-@app.callback(Output("adv-msg","children"),
-              Input("adv-btn","n_clicks"), State("sel","data"),
-              prevent_initial_call=True)
+# ── Show/hide advance button based on selected node ───────────────────────────
+@app.callback(
+    Output("adv-area","style"),
+    Input("sel","data"),
+)
+def toggle_adv_area(sel):
+    nd = NODES.get(sel, {})
+    stages = nd.get("stages", [])
+    ci = next((i for i,s in enumerate(stages) if s["status"]=="current"), -1)
+    if nd.get("type") == WORKFLOW and 0 <= ci < len(stages)-1:
+        return {"display":"block","marginTop":10}
+    return {"display":"none"}
+
+
+# ── Advance stage (permanent IDs — always works) ──────────────────────────────
+@app.callback(
+    Output("adv-msg","children"),
+    Input("adv-btn","n_clicks"),
+    State("sel","data"),
+    prevent_initial_call=True,
+)
 def do_advance(n, sel):
     if not n: return no_update
     r = advance_stage(sel)
     col = SUCCESS if r["ok"] else DANGER
-    msg = f"✓ Advanced to: {r['new_stage']}" if r["ok"] else r["message"]
-    return html.Div(msg, style={"color":col,"fontSize":12,"fontWeight":700,"marginTop":6})
+    return html.Div(
+        f"✓ Advanced to: {r['new_stage']}" if r["ok"] else r["message"],
+        style={"color":col,"fontWeight":700,"fontSize":12},
+    )
 
 
 # ── Entity panel toggle (sidebar 📦 button) ───────────────────────────────────
